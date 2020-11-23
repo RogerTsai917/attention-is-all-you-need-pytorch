@@ -101,3 +101,10 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# data
+.vscode/*
+.data/*
+*.pkl
+*chkpt
+*.txt

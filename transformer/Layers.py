@@ -40,3 +40,14 @@ class DecoderLayer(nn.Module):
             dec_output, enc_output, enc_output, mask=dec_enc_attn_mask)
         dec_output = self.pos_ffn(dec_output)
         return dec_output, dec_slf_attn, dec_enc_attn
+
+class HighWayLayer(nn.Module):
+
+    def __init__(self, d_model, n_trg_vocab, bias):
+        super().__init__()
+
+        self.trg_word_prj = nn.Linear(d_model, n_trg_vocab, bias=bias)
+
+    def forward(self, decoder_output):
+        seq_logit = self.trg_word_prj(decoder_output)
+        return seq_logit

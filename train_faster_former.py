@@ -15,7 +15,7 @@ from torchtext.data import Field, Dataset, BucketIterator
 from torchtext.datasets import TranslationDataset
 
 import transformer.Constants as Constants
-from transformer.Models import Transformer
+from transformer.HighWayModels import HighWayTransformer
 from transformer.Optim import ScheduledOptim
 
 __author__ = "Yu-Hsiang Huang"
@@ -81,7 +81,7 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing):
 
         # forward
         optimizer.zero_grad()
-        pred = model(src_seq, trg_seq)
+        pred ,all_highway_exits, exit_layer = model(src_seq, trg_seq)
 
         # backward and update parameters
         loss, n_correct, n_word = cal_performance(
@@ -114,7 +114,7 @@ def eval_epoch(model, validation_data, device, opt):
             trg_seq, gold = map(lambda x: x.to(device), patch_trg(batch.trg, opt.trg_pad_idx))
 
             # forward
-            pred = model(src_seq, trg_seq)
+            pred ,all_highway_exits, exit_layer = model(src_seq, trg_seq)
             loss, n_correct, n_word = cal_performance(
                 pred, gold, opt.trg_pad_idx, smoothing=False)
 
@@ -128,7 +128,7 @@ def eval_epoch(model, validation_data, device, opt):
     return loss_per_word, accuracy
 
 
-def train(model, training_data, validation_data, optimizer, device, opt):
+def train(model, training_data, validation_data, optimizer, device, opt, train_highway=False):
     ''' Start training '''
 
     log_train_file, log_valid_file = None, None
@@ -136,11 +136,12 @@ def train(model, training_data, validation_data, optimizer, device, opt):
     if opt.log:
         log_train_file = opt.log + '.train.log'
         log_valid_file = opt.log + '.valid.log'
+        log_train_highway_file = opt.log + '.train.highway.log'
 
         print('[Info] Training performance will be written to file: {} and {}'.format(
             log_train_file, log_valid_file))
 
-        with open(log_train_file, 'w') as log_tf, open(log_valid_file, 'w') as log_vf:
+        with open(log_train_file, 'w') as log_tf, open(log_valid_file, 'w') as log_vf, open(log_train_highway_file, 'w') as log_vf:
             log_tf.write('epoch,loss,ppl,accuracy\n')
             log_vf.write('epoch,loss,ppl,accuracy\n')
 
@@ -190,7 +191,7 @@ def train(model, training_data, validation_data, optimizer, device, opt):
 def main():
     ''' 
     Usage:
-    python train.py -data_pkl m30k_deen_shr.pkl -log m30k_deen_shr -embs_share_weight -proj_share_weight -label_smoothing -save_model trained -b 256 -warmup 128000
+    python train_faster_former.py -data_pkl m30k_deen_shr.pkl -log m30k_deen_shr -embs_share_weight -proj_share_weight -label_smoothing -save_model trained -train_b 128 -eval_b 1 -warmup 128000 -epoch 400
     '''
 
     parser = argparse.ArgumentParser()
@@ -201,7 +202,8 @@ def main():
     parser.add_argument('-val_path', default=None)     # bpe encoded data
 
     parser.add_argument('-epoch', type=int, default=10)
-    parser.add_argument('-b', '--batch_size', type=int, default=2048)
+    parser.add_argument('-train_b', '--train_batch_size', type=int, default=2048)
+    parser.add_argument('-eval_b', '--val_batch_size', type=int, default=2048)
 
     parser.add_argument('-d_model', type=int, default=512)
     parser.add_argument('-d_inner_hid', type=int, default=2048)
@@ -231,7 +233,7 @@ def main():
         print('No experiment result will be saved.')
         raise
 
-    if opt.batch_size < 2048 and opt.n_warmup_steps <= 4000:
+    if (opt.train_batch_size < 2048 or opt.val_batch_size < 2048) and opt.n_warmup_steps <= 4000:
         print('[Warning] The warmup steps may be not enough.\n'\
               '(sz_b, warmup) = (2048, 4000) is the official setting.\n'\
               'Using smaller batch w/o longer warmup may cause '\
@@ -250,7 +252,7 @@ def main():
 
     print(opt)
 
-    transformer = Transformer(
+    high_way_transformer = HighWayTransformer(
         opt.src_vocab_size,
         opt.trg_vocab_size,
         src_pad_idx=opt.src_pad_idx,
@@ -267,14 +269,18 @@ def main():
         dropout=opt.dropout).to(device)
 
     optimizer = ScheduledOptim(
-        optim.Adam(transformer.parameters(), betas=(0.9, 0.98), eps=1e-09),
+        optim.Adam(high_way_transformer.parameters(), betas=(0.9, 0.98), eps=1e-09),
         2.0, opt.d_model, opt.n_warmup_steps)
 
-    train(transformer, training_data, validation_data, optimizer, device, opt)
+    train(high_way_transformer, training_data, validation_data, optimizer, device, opt)
+
+    train(high_way_transformer, training_data, validation_data, optimizer, device, opt, train_highway=True)
+
 
 
 def prepare_dataloaders_from_bpe_files(opt, device):
-    batch_size = opt.batch_size
+    train_batch_size = opt.train_batch_size
+    val_batch_size = opt.val_batch_size
     MIN_FREQ = 2
     if not opt.embs_share_weight:
         raise
@@ -302,13 +308,14 @@ def prepare_dataloaders_from_bpe_files(opt, device):
     opt.src_pad_idx = opt.trg_pad_idx = field.vocab.stoi[Constants.PAD_WORD]
     opt.src_vocab_size = opt.trg_vocab_size = len(field.vocab)
 
-    train_iterator = BucketIterator(train, batch_size=batch_size, device=device, train=True)
-    val_iterator = BucketIterator(val, batch_size=batch_size, device=device)
+    train_iterator = BucketIterator(train, batch_size=train_batch_size, device=device, train=True)
+    val_iterator = BucketIterator(val, batch_size=val_batch_size, device=device)
     return train_iterator, val_iterator
 
 
 def prepare_dataloaders(opt, device):
-    batch_size = opt.batch_size
+    train_batch_size = opt.train_batch_size
+    val_batch_size = opt.val_batch_size
     data = pickle.load(open(opt.data_pkl, 'rb'))
 
     opt.max_token_seq_len = data['settings'].max_len
@@ -328,11 +335,12 @@ def prepare_dataloaders(opt, device):
     train = Dataset(examples=data['train'], fields=fields)
     val = Dataset(examples=data['valid'], fields=fields)
 
-    train_iterator = BucketIterator(train, batch_size=batch_size, device=device, train=True)
-    val_iterator = BucketIterator(val, batch_size=batch_size, device=device)
+    train_iterator = BucketIterator(train, batch_size=train_batch_size, device=device, train=True)
+    val_iterator = BucketIterator(val, batch_size=val_batch_size, device=device)
 
     return train_iterator, val_iterator
 
 
 if __name__ == '__main__':
     main()
+ 
