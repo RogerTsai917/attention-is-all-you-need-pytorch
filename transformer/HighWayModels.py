@@ -61,12 +61,13 @@ class Encoder(nn.Module):
         self.src_word_emb = nn.Embedding(n_src_vocab, d_word_vec, padding_idx=pad_idx)
         self.position_enc = PositionalEncoding(d_word_vec, n_position=n_position)
         self.dropout = nn.Dropout(p=dropout)
+        self.n_layers = n_layers
         self.layer_stack = nn.ModuleList([
             EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
-    def forward(self, src_seq, src_mask, return_attns=False):
+    def forward(self, src_seq, src_mask, return_attns=False, share_weight=True, early_exit_layer=None):
 
         enc_slf_attn_list = []
 
@@ -74,9 +75,17 @@ class Encoder(nn.Module):
         enc_output = self.dropout(self.position_enc(self.src_word_emb(src_seq)))
         enc_output = self.layer_norm(enc_output)
 
-        for enc_layer in self.layer_stack:
-            enc_output, enc_slf_attn = enc_layer(enc_output, slf_attn_mask=src_mask)
-            enc_slf_attn_list += [enc_slf_attn] if return_attns else []
+        if share_weight:
+            for i in range(self.n_layers):
+                enc_output, enc_slf_attn = self.layer_stack[0](enc_output, slf_attn_mask=src_mask)
+                if early_exit_layer != None and layer_number+1 == early_exit_layer:
+                    break
+        else:
+            for layer_number, enc_layer in enumerate(self.layer_stack):
+                enc_output, enc_slf_attn = enc_layer(enc_output, slf_attn_mask=src_mask)
+                enc_slf_attn_list += [enc_slf_attn] if return_attns else []
+                if early_exit_layer != None and layer_number+1 == early_exit_layer:
+                    break
 
         if return_attns:
             return enc_output, enc_slf_attn_list
@@ -91,7 +100,7 @@ class HighWayDecoder(nn.Module):
             d_model, d_inner, pad_idx, n_position=200, dropout=0.1):
 
         super().__init__()
-
+  
         self.trg_word_emb = nn.Embedding(n_trg_vocab, d_word_vec, padding_idx=pad_idx)
         self.position_enc = PositionalEncoding(d_word_vec, n_position=n_position)
         self.dropout = nn.Dropout(p=dropout)
@@ -114,7 +123,6 @@ class HighWayDecoder(nn.Module):
                 self.early_exit_entropy[i] = x
         else:
             self.early_exit_entropy = x
-
     
 
     def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False):
@@ -132,21 +140,16 @@ class HighWayDecoder(nn.Module):
             dec_enc_attn_list += [dec_enc_attn] if return_attns else []
 
             highway_seq_logit = self.highway[i](dec_output)
+            all_highway_exits += [highway_seq_logit]
 
             if not self.training and translate:
-                highway_entropy = entropy(highway_seq_logit[0])
-                print("highway_entropy: ", len(highway_entropy))
-                print("highway_entropy: ", highway_entropy)
-                all_highway_exits += [highway_seq_logit]
-
+                highway_entropy = entropy(highway_seq_logit[0])[-1]
                 if highway_entropy < self.early_exit_entropy[i]:
                     raise HighwayException(all_highway_exits, i + 1)
-            else:
-                all_highway_exits += [highway_seq_logit]
 
         if return_attns:
             return dec_output, all_highway_exits, dec_slf_attn_list, dec_enc_attn_list
-        return dec_output, all_highway_exits
+        return dec_output, all_highway_exits, None
 
 class HighwayException(Exception):
     def __init__(self, message, exit_layer):
@@ -205,14 +208,9 @@ class HighWayTransformer(nn.Module):
         trg_mask = get_pad_mask(trg_seq, self.trg_pad_idx) & get_subsequent_mask(trg_seq)
 
         enc_output, *_ = self.encoder(src_seq, src_mask)
-        try:
-            dec_output, all_highway_exits, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
-            seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
-
-        except HighwayException as e:
-            all_highway_exits = e.message
-            seq_logit = all_highway_exits[-1]
-            exit_layer = e.exit_layer
+        dec_output, all_highway_exits, exit_layer, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
+        seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
+        # seq_logit = seq_logit.view(-1, seq_logit.size(2))
 
         # reshape the tensor and return
-        return seq_logit.view(-1, seq_logit.size(2)), all_highway_exits, exit_layer
+        return seq_logit, all_highway_exits, exit_layer

@@ -105,6 +105,8 @@ ENV/
 # data
 .vscode/*
 .data/*
+prediction/*
+model/*
 *.pkl
 *chkpt
 *.txt
