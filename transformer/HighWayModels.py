@@ -78,7 +78,7 @@ class Encoder(nn.Module):
         if share_weight:
             for i in range(self.n_layers):
                 enc_output, enc_slf_attn = self.layer_stack[0](enc_output, slf_attn_mask=src_mask)
-                if early_exit_layer != None and layer_number+1 == early_exit_layer:
+                if early_exit_layer != None and i+1 == early_exit_layer:
                     break
         else:
             for layer_number, enc_layer in enumerate(self.layer_stack):
@@ -100,10 +100,11 @@ class HighWayDecoder(nn.Module):
             d_model, d_inner, pad_idx, n_position=200, dropout=0.1):
 
         super().__init__()
-  
+
         self.trg_word_emb = nn.Embedding(n_trg_vocab, d_word_vec, padding_idx=pad_idx)
         self.position_enc = PositionalEncoding(d_word_vec, n_position=n_position)
         self.dropout = nn.Dropout(p=dropout)
+        self.n_layers = n_layers
         self.layer_stack = nn.ModuleList([
             DecoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
@@ -125,7 +126,7 @@ class HighWayDecoder(nn.Module):
             self.early_exit_entropy = x
     
 
-    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False):
+    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False, share_weight=True):
 
         dec_slf_attn_list, dec_enc_attn_list, all_highway_exits  = [], [], []
 
@@ -133,9 +134,14 @@ class HighWayDecoder(nn.Module):
         dec_output = self.dropout(self.position_enc(self.trg_word_emb(trg_seq)))
         dec_output = self.layer_norm(dec_output)
 
-        for i, dec_layer in enumerate(self.layer_stack):
-            dec_output, dec_slf_attn, dec_enc_attn = dec_layer(
-                dec_output, enc_output, slf_attn_mask=trg_mask, dec_enc_attn_mask=src_mask)
+        for i in range(self.n_layers):
+            if share_weight:
+                dec_output, dec_slf_attn, dec_enc_attn = self.layer_stack[0](
+                    dec_output, enc_output, slf_attn_mask=trg_mask, dec_enc_attn_mask=src_mask)
+            else:
+                dec_output, dec_slf_attn, dec_enc_attn = self.layer_stack[i](
+                   dec_output, enc_output, slf_attn_mask=trg_mask, dec_enc_attn_mask=src_mask)
+             
             dec_slf_attn_list += [dec_slf_attn] if return_attns else []
             dec_enc_attn_list += [dec_enc_attn] if return_attns else []
 

@@ -1,23 +1,37 @@
-from bleu import file_bleu
+from nlgeval import NLGEval
+
+nlgeval = NLGEval(no_skipthoughts=True, no_glove=True, metrics_to_omit=["METEOR", "CIDEr"])
+
+def read_text_to_list(file_name):
+    result_list = []
+    with open(file_name, 'r') as fp:
+        line = fp.readline()
+        while line:
+            line = line.replace("\n", "").replace("\r", "")
+            line = line.replace(".", " .").replace(",", " ,")
+            result_list.append(line)
+            line = fp.readline()
+    return result_list
 
 
-def main(ref_file_name, hyp_file_name, entropy):
-    sorce = file_bleu(ref_file_name, hyp_file_name)
+def main(answer_file_name, predict_file_name, entropy):
+    
+    answer_list = read_text_to_list(answer_file_name)
+    predict_list = read_text_to_list(predict_file_name)
+
+    result = nlgeval.compute_metrics(ref_list=[answer_list],hyp_list=predict_list)
     print("====================")
     print("[Info] entropy: ", entropy)
-    print("BLEU sorce:", sorce)
+    print("[Info] sorce:", result)
 
 
 if __name__ == "__main__":
-    # entropy_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    # entropy_list = [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
-    entropy_list = [2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0]
+
+    predict_folder = "base_early_exit"
+    # entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
+    entropy_list = [0.0]
 
     for entropy in entropy_list:
-        ref_file_name = "test2016.en.txt" 
-        hyp_file_name = "prediction_" + str(entropy) + ".txt"
-        main(ref_file_name, hyp_file_name, entropy)
-    
-    # ref_file_name = "prediction_0.0.txt" 
-    # hyp_file_name = "prediction_1.0.txt"
-    # main(ref_file_name, hyp_file_name, 1.0)
+        answer_file_name = "prediction/test2016.en.txt" 
+        predict_file_name = "prediction/" + predict_folder + "/prediction_" + str(entropy) + ".txt"
+        main(answer_file_name, predict_file_name, entropy)
