@@ -67,7 +67,7 @@ class Encoder(nn.Module):
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
-    def forward(self, src_seq, src_mask, return_attns=False, share_weight=True, early_exit_layer=None):
+    def forward(self, src_seq, src_mask, return_attns=False, share_weight=False, early_exit_layer=None):
 
         enc_slf_attn_list = []
 
@@ -126,7 +126,7 @@ class HighWayDecoder(nn.Module):
             self.early_exit_entropy = x
     
 
-    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False, share_weight=True):
+    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False, share_weight=False):
 
         dec_slf_attn_list, dec_enc_attn_list, all_highway_exits  = [], [], []
 
