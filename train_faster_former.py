@@ -357,6 +357,8 @@ def main():
     parser.add_argument('-dropout', type=float, default=0.1)
     parser.add_argument('-embs_share_weight', action='store_true')
     parser.add_argument('-proj_share_weight', action='store_true')
+    parser.add_argument('-encoder_share_weight', action='store_true')
+    parser.add_argument('-decoder_share_weight', action='store_true')
 
     parser.add_argument('-log', default=None)
     parser.add_argument('-save_model', default=None)
@@ -399,6 +401,8 @@ def main():
         trg_pad_idx=opt.trg_pad_idx,
         trg_emb_prj_weight_sharing=opt.proj_share_weight,
         emb_src_trg_weight_sharing=opt.embs_share_weight,
+        encoder_weight_sharing=opt.encoder_share_weight,
+        decoder_weight_sharing=opt.decoder_share_weight,
         d_k=opt.d_k,
         d_v=opt.d_v,
         d_model=opt.d_model,

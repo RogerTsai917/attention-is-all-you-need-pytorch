@@ -54,7 +54,7 @@ class Encoder(nn.Module):
 
     def __init__(
             self, n_src_vocab, d_word_vec, n_layers, n_head, d_k, d_v,
-            d_model, d_inner, pad_idx, dropout=0.1, n_position=200):
+            d_model, d_inner, pad_idx, dropout=0.1, n_position=200, share_weight=False):
 
         super().__init__()
 
@@ -62,12 +62,13 @@ class Encoder(nn.Module):
         self.position_enc = PositionalEncoding(d_word_vec, n_position=n_position)
         self.dropout = nn.Dropout(p=dropout)
         self.n_layers = n_layers
+        self.share_weight = share_weight
         self.layer_stack = nn.ModuleList([
             EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
-    def forward(self, src_seq, src_mask, return_attns=False, share_weight=False, early_exit_layer=None):
+    def forward(self, src_seq, src_mask, return_attns=False, early_exit_layer=None):
 
         enc_slf_attn_list = []
 
@@ -75,7 +76,7 @@ class Encoder(nn.Module):
         enc_output = self.dropout(self.position_enc(self.src_word_emb(src_seq)))
         enc_output = self.layer_norm(enc_output)
 
-        if share_weight:
+        if self.share_weight:
             for i in range(self.n_layers):
                 enc_output, enc_slf_attn = self.layer_stack[0](enc_output, slf_attn_mask=src_mask)
                 if early_exit_layer != None and i+1 == early_exit_layer:
@@ -97,7 +98,7 @@ class HighWayDecoder(nn.Module):
 
     def __init__(
             self, n_trg_vocab, d_word_vec, n_layers, n_head, d_k, d_v,
-            d_model, d_inner, pad_idx, n_position=200, dropout=0.1):
+            d_model, d_inner, pad_idx, n_position=200, dropout=0.1, share_weight=False):
 
         super().__init__()
 
@@ -105,6 +106,7 @@ class HighWayDecoder(nn.Module):
         self.position_enc = PositionalEncoding(d_word_vec, n_position=n_position)
         self.dropout = nn.Dropout(p=dropout)
         self.n_layers = n_layers
+        self.share_weight = share_weight
         self.layer_stack = nn.ModuleList([
             DecoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
@@ -126,7 +128,7 @@ class HighWayDecoder(nn.Module):
             self.early_exit_entropy = x
     
 
-    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False, share_weight=False):
+    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False):
 
         dec_slf_attn_list, dec_enc_attn_list, all_highway_exits  = [], [], []
 
@@ -135,7 +137,7 @@ class HighWayDecoder(nn.Module):
         dec_output = self.layer_norm(dec_output)
 
         for i in range(self.n_layers):
-            if share_weight:
+            if self.share_weight:
                 dec_output, dec_slf_attn, dec_enc_attn = self.layer_stack[0](
                     dec_output, enc_output, slf_attn_mask=trg_mask, dec_enc_attn_mask=src_mask)
             else:
@@ -169,7 +171,8 @@ class HighWayTransformer(nn.Module):
             self, n_src_vocab, n_trg_vocab, src_pad_idx, trg_pad_idx,
             d_word_vec=512, d_model=512, d_inner=2048,
             n_layers=6, n_head=8, d_k=64, d_v=64, dropout=0.1, n_position=200,
-            trg_emb_prj_weight_sharing=True, emb_src_trg_weight_sharing=True):
+            trg_emb_prj_weight_sharing=True, emb_src_trg_weight_sharing=True,
+            encoder_weight_sharing=False, decoder_weight_sharing=False):
 
         super().__init__()
 
@@ -179,13 +182,13 @@ class HighWayTransformer(nn.Module):
             n_src_vocab=n_src_vocab, n_position=n_position,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
             n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
-            pad_idx=src_pad_idx, dropout=dropout)
+            pad_idx=src_pad_idx, dropout=dropout, share_weight=encoder_weight_sharing)
 
         self.decoder = HighWayDecoder(
             n_trg_vocab=n_trg_vocab, n_position=n_position,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
             n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
-            pad_idx=trg_pad_idx, dropout=dropout)
+            pad_idx=trg_pad_idx, dropout=dropout, share_weight=decoder_weight_sharing)
 
         self.trg_word_prj = nn.Linear(d_model, n_trg_vocab, bias=False)
 
