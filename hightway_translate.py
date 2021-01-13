@@ -25,12 +25,13 @@ def load_model(opt, device):
         model_opt.src_pad_idx,
         model_opt.trg_pad_idx,
 
+        
+        encoder_early_exit=model_opt.encoder_early_exit,
+        decoder_early_exit=model_opt.decoder_early_exit,
         trg_emb_prj_weight_sharing=model_opt.proj_share_weight,
         emb_src_trg_weight_sharing=model_opt.embs_share_weight,
-        # encoder_weight_sharing=model_opt.encoder_share_weight,
-        # decoder_weight_sharing=model_opt.decoder_share_weight,
-        encoder_weight_sharing=False,
-        decoder_weight_sharing=False,
+        encoder_weight_sharing=model_opt.encoder_share_weight,
+        decoder_weight_sharing=model_opt.decoder_share_weight,
         d_k=model_opt.d_k,
         d_v=model_opt.d_v,
         d_model=model_opt.d_model,

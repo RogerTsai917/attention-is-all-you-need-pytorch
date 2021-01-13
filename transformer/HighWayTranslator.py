@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformer.HighWayModels import HighWayTransformer, get_pad_mask, get_subsequent_mask, HighwayException
+from transformer.HighWayModels import HighWayTransformer, get_pad_mask, get_subsequent_mask, DecoderHighwayException
 
 
 def creat_count_early_exit_dict(n_layers):
@@ -48,7 +48,7 @@ class HighWayTranslator(nn.Module):
         trg_mask = get_subsequent_mask(trg_seq)
         try:
             dec_output, all_highway_exits, exit_layer = self.model.decoder(trg_seq, trg_mask, enc_output, src_mask, translate=translate)
-        except HighwayException as e:
+        except DecoderHighwayException as e:
             all_highway_exits = e.message
             seq_logit = all_highway_exits[-1]
             exit_layer = e.exit_layer
