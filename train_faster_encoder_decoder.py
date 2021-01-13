@@ -18,9 +18,11 @@ import transformer.Constants as Constants
 from transformer.HighWayModels import HighWayTransformer
 from transformer.Optim import ScheduledOptim
 
+TRAIN_BASE = "train_base_model"
+TRAIN_ENCODER = "train_encoder_early_exit"
+TRAIN_DECODER = "train_decoder_early_exit"
 
 def load_model(opt, device):
-
     checkpoint = torch.load(opt.save_model + '.chkpt', map_location=device)
     model_opt = checkpoint['settings']
 
@@ -128,7 +130,7 @@ def patch_trg(trg, pad_idx):
     return trg, gold
 
 
-def train_epoch(model, training_data, optimizer, opt, device, smoothing, train_highway):
+def train_epoch(model, training_data, optimizer, opt, device, smoothing, training_mode):
     ''' Epoch operation in training phase'''
 
     model.train()
@@ -146,14 +148,15 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing, train_h
         pred ,all_highway_exits, exit_layer = model(src_seq, trg_seq)
 
         # backward and update parameters
-        if train_highway:
+        if training_mode == TRAIN_BASE:
+            loss, n_correct, n_word = cal_performance(
+                pred, gold, opt.trg_pad_idx, smoothing=smoothing)
+        elif training_mode == TRAIN_ENCODER:
+            pass
+        elif training_mode == TRAIN_DECODER:
             loss, n_correct, n_word = cal_student_performance(
                 pred, gold, opt.trg_pad_idx, all_highway_exits)
             
-        else:
-            loss, n_correct, n_word = cal_performance(
-                pred, gold, opt.trg_pad_idx, smoothing=smoothing)
-
         loss.backward()
         optimizer.step_and_update_lr()
 
@@ -196,29 +199,29 @@ def eval_epoch(model, validation_data, device, opt):
     return loss_per_word, accuracy
 
 
-def train(model, training_data, validation_data, device, opt, train_highway=False):
+def train(model, training_data, validation_data, device, opt, training_mode):
     ''' Start training '''
 
     log_train_file, log_valid_file = None, None
-    log_train_highway_file, log_valid_highway_file = None, None
 
     if opt.log:
-        log_train_file = opt.log + '.train.log'
-        log_valid_file = opt.log + '.valid.log'
-        log_train_highway_file = opt.log + '.train.highway.log'
-        log_valid_highway_file = opt.log + '.valid.highway.log'
+        if training_mode == TRAIN_BASE:
+            log_train_file = opt.log + '.train.base.log'
+            log_valid_file = opt.log + '.valid.base.log'
+        elif training_mode == TRAIN_ENCODER:
+            log_train_file = opt.log + '.train.encoder.highway.log'
+            log_valid_file = opt.log + '.valid.encoder.highway.log'
+        elif training_mode == TRAIN_DECODER:
+            log_train_file = opt.log + '.train.decoder.highway.log'
+            log_valid_file = opt.log + '.valid.decoder.highway.log'
+
 
         print('[Info] Training performance will be written to file: {} and {}'.format(
             log_train_file, log_valid_file))
 
-        if not train_highway:
-            with open(log_train_file, 'w') as log_tf, open(log_valid_file, 'w') as log_vf:
-                log_tf.write('epoch,loss,ppl,accuracy\n')
-                log_vf.write('epoch,loss,ppl,accuracy\n')
-        else:
-            with open(log_train_highway_file, 'w') as log_tf, open(log_valid_highway_file, 'w') as log_vf:
-                log_tf.write('epoch,loss,ppl,accuracy\n')
-                log_vf.write('epoch,loss,ppl,accuracy\n')
+        with open(log_train_file, 'w') as log_tf, open(log_valid_file, 'w') as log_vf:
+            log_tf.write('epoch,loss,ppl,accuracy\n')
+            log_vf.write('epoch,loss,ppl,accuracy\n')
 
     def print_performances(header, loss, accu, start_time):
         print('  - {header:12} ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
@@ -227,30 +230,13 @@ def train(model, training_data, validation_data, device, opt, train_highway=Fals
                   accu=100*accu, elapse=(time.time()-start_time)/60))
 
     no_decay = ["bias", "LayerNorm.weight"]
-    if train_highway:
+    if training_mode == TRAIN_BASE:
         optimizer_grouped_parameters = [
             {
                 "params": [
                     p
                     for n, p in model.named_parameters()
-                    if ("highway" in n) and (not any(nd in n for nd in no_decay))
-                ],
-                "weight_decay": opt.weight_decay,
-            },
-            {
-                "params": [
-                    p for n, p in model.named_parameters() if ("highway" in n) and (any(nd in n for nd in no_decay))
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-    else:
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p
-                    for n, p in model.named_parameters()
-                    if ("highway" not in n) and (not any(nd in n for nd in no_decay))
+                    if ("encoder_highway" not in n) and ("decoder_highway" not in n) and (not any(nd in n for nd in no_decay))
                 ],
                 "weight_decay": opt.weight_decay,
             },
@@ -258,20 +244,63 @@ def train(model, training_data, validation_data, device, opt, train_highway=Fals
                 "params": [
                     p
                     for n, p in model.named_parameters()
-                    if ("highway" not in n) and (any(nd in n for nd in no_decay))
+                    if ("encoder_highway" not in n) and ("decoder_highway" not in n) and (any(nd in n for nd in no_decay))
                 ],
                 "weight_decay": 0.0,
             },
         ]
+
+    elif training_mode == TRAIN_ENCODER:
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if ("encoder_highway" in n) and (not any(nd in n for nd in no_decay))
+                ],
+                "weight_decay": opt.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if ("encoder_highway" in n) and (any(nd in n for nd in no_decay))
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+    elif training_mode == TRAIN_DECODER:
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if ("decoder_highway" in n) and (not any(nd in n for nd in no_decay))
+                ],
+                "weight_decay": opt.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if ("decoder_highway" in n) and (any(nd in n for nd in no_decay))
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        
 
     optimizer = ScheduledOptim(
         optim.Adam(optimizer_grouped_parameters, betas=(0.9, 0.98), eps=1e-09),
         2.0, opt.d_model, opt.n_warmup_steps)
 
-    if train_highway:    
-        training_epoch = opt.highway_epoch
-    else:
+    if training_mode == TRAIN_BASE:
         training_epoch = opt.base_epoch
+    elif training_mode == TRAIN_ENCODER:
+        training_epoch = opt.highway_encoder_epoch
+    elif training_mode == TRAIN_DECODER:
+        training_epoch = opt.highway_decoder_epoch
 
     #valid_accus = []
     valid_losses = []
@@ -280,7 +309,7 @@ def train(model, training_data, validation_data, device, opt, train_highway=Fals
 
         start = time.time()
         train_loss, train_accu = train_epoch(
-            model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, train_highway=train_highway)
+            model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, training_mode=training_mode)
         print_performances('Training', train_loss, train_accu, start)
 
         start = time.time()
@@ -293,46 +322,38 @@ def train(model, training_data, validation_data, device, opt, train_highway=Fals
 
         if opt.save_model:
             if opt.save_mode == 'all':
-                if train_highway:
-                    model_name = opt.save_model + '_accu_{accu:3.3f}_highway.chkpt'.format(accu=100*valid_accu)
-                else:
+                if training_mode == TRAIN_BASE:
                     model_name = opt.save_model + '_accu_{accu:3.3f}.chkpt'.format(accu=100*valid_accu)
+                elif training_mode == TRAIN_ENCODER:
+                    model_name = opt.save_model + '_accu_{accu:3.3f}_encoder_highway.chkpt'.format(accu=100*valid_accu)
+                elif training_mode == TRAIN_DECODER:
+                    model_name = opt.save_model + '_accu_{accu:3.3f}_decoder_highway.chkpt'.format(accu=100*valid_accu)
                 torch.save(checkpoint, model_name)
-            elif opt.save_mode == 'best':
-                if train_highway:
-                    model_name = opt.save_model + '_highway.chkpt'
-                else:
-                    model_name = opt.save_model + '.chkpt'
-                if not train_highway and valid_loss <= min(valid_losses):
-                    torch.save(checkpoint, model_name)
-                    print('    - [Info] The checkpoint file has been updated.')
-                elif train_highway:
-                    torch.save(checkpoint, model_name)
-                    print('    - [Info] The checkpoint file has been updated.')
 
-        if log_train_file and log_valid_file and log_train_highway_file and log_valid_highway_file:
-            if not train_highway:
-                with open(log_train_file, 'a') as log_tf, open(log_valid_file, 'a') as log_vf:
-                    log_tf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
-                        epoch=epoch_i, loss=train_loss,
-                        ppl=math.exp(min(train_loss, 100)), accu=100*train_accu))
-                    log_vf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
-                        epoch=epoch_i, loss=valid_loss,
-                        ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu))
-            else:
-                with open(log_train_highway_file, 'a') as log_tf, open(log_valid_highway_file, 'a') as log_vf:
-                    log_tf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
-                        epoch=epoch_i, loss=train_loss,
-                        ppl=math.exp(min(train_loss, 100)), accu=100*train_accu))
-                    log_vf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
-                        epoch=epoch_i, loss=valid_loss,
-                        ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu))
+            elif opt.save_mode == 'best':
+                if training_mode == TRAIN_BASE:
+                     model_name = opt.save_model + '.chkpt'
+                elif training_mode == TRAIN_ENCODER:
+                    model_name = opt.save_model + '_encoder_highway.chkpt'
+                elif training_mode == TRAIN_DECODER:
+                    model_name = opt.save_model + '_decoder_highway.chkpt'
+                   
+                if training_mode == TRAIN_BASE and valid_loss <= min(valid_losses):
+                    torch.save(checkpoint, model_name)
+                elif training_mode == TRAIN_ENCODER or training_mode == TRAIN_DECODER:
+                    torch.save(checkpoint, model_name)
+                print('    - [Info] The checkpoint file has been updated.')
+
+        if log_train_file and log_valid_file:
+            with open(log_train_file, 'a') as log_tf, open(log_valid_file, 'a') as log_vf:
+                log_tf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
+                    epoch=epoch_i, loss=train_loss,
+                    ppl=math.exp(min(train_loss, 100)), accu=100*train_accu))
+                log_vf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
+                    epoch=epoch_i, loss=valid_loss,
+                    ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu))
 
 def main():
-    ''' 
-    Usage:
-    python train_faster_former.py -data_pkl m30k_deen_shr.pkl -log m30k_deen_shr -embs_share_weight -proj_share_weight -label_smoothing -save_model trained -train_b 128 -val_b 128 -warmup 128000 -base_epoch 400 -highway_epoch 200
-    '''
 
     parser = argparse.ArgumentParser()
 
@@ -342,7 +363,7 @@ def main():
     parser.add_argument('-val_path', default=None)     # bpe encoded data
 
     parser.add_argument('-base_epoch', type=int, default=10)
-    parser.add_argument('-heighwway_encoder_epoch', type=int, default=10)
+    parser.add_argument('-highway_encoder_epoch', type=int, default=10)
     parser.add_argument('-highway_decoder_epoch', type=int, default=10)
     parser.add_argument('-train_b', '--train_batch_size', type=int, default=2048)
     parser.add_argument('-val_b', '--val_batch_size', type=int, default=2048)
@@ -359,10 +380,10 @@ def main():
 
     parser.add_argument('-dropout', type=float, default=0.1)
 
-    parser.add_argument('-encoder_early_exit', action='store_true')
-    parser.add_argument('-decoder_early_exit', action='store_true')
     parser.add_argument('-embs_share_weight', action='store_true')
     parser.add_argument('-proj_share_weight', action='store_true')
+    parser.add_argument('-encoder_early_exit', action='store_true')
+    parser.add_argument('-decoder_early_exit', action='store_true')
     parser.add_argument('-encoder_share_weight', action='store_true')
     parser.add_argument('-decoder_share_weight', action='store_true')
 
@@ -420,11 +441,15 @@ def main():
         n_head=opt.n_head,  
         dropout=opt.dropout).to(device)
 
-    train(high_way_transformer, training_data, validation_data, device, opt)
+    train(high_way_transformer, training_data, validation_data, device, opt, training_mode=TRAIN_BASE)
 
-    high_way_transformer = load_model(opt, device)
+    if opt.encoder_early_exit: 
+        high_way_transformer = load_model(opt, device)
+        train(high_way_transformer, training_data, validation_data, device, opt, training_mode=TRAIN_ENCODER)
 
-    train(high_way_transformer, training_data, validation_data, device, opt, train_highway=True)
+    if opt.decoder_early_exit: 
+        high_way_transformer = load_model(opt, device)
+        train(high_way_transformer, training_data, validation_data, device, opt, training_mode=TRAIN_DECODER)
 
 
 

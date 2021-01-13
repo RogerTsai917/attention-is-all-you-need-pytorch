@@ -14,6 +14,6 @@ python train_faster_encoder_decoder.py\
     -train_b 128\
     -val_b 128\
     -warmup 128000\
-    -base_epoch 2\
-    -heighwway_encoder_epoch 2\
-    -highway_decoder_epoch 2
+    -base_epoch 1\
+    -highway_decoder_epoch 1\
+    -highway_decoder_epoch 1
