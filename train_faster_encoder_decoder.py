@@ -9,7 +9,9 @@ import dill as pickle
 from tqdm import tqdm
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
 import torch.optim as optim
 from torchtext.data import Field, Dataset, BucketIterator
 from torchtext.datasets import TranslationDataset
@@ -22,8 +24,11 @@ TRAIN_BASE = "train_base_model"
 TRAIN_ENCODER = "train_encoder_early_exit"
 TRAIN_DECODER = "train_decoder_early_exit"
 
-def load_model(opt, device):
-    checkpoint = torch.load(opt.save_model + '.chkpt', map_location=device)
+def load_model(opt, device, training_mode):
+    if (training_mode == TRAIN_ENCODER) or ( not opt.encoder_early_exit and training_mode == TRAIN_DECODER):
+        checkpoint = torch.load(opt.save_model + '.chkpt', map_location=device)
+    elif training_mode == TRAIN_DECODER:
+        checkpoint = torch.load(opt.save_model + '_encoder_highway.chkpt', map_location=device)
     model_opt = checkpoint['settings']
 
     model = HighWayTransformer(
@@ -51,7 +56,22 @@ def load_model(opt, device):
     return model 
 
 
-def cal_student_performance(pred, gold, trg_pad_idx, all_highway_exits):
+def cal_encoder_student_performance(enc_output, all_highway_exits):
+    # print("enc_output", enc_output.shape)
+    # print("highway_exits", all_highway_exits[0].shape)
+    enc_output = enc_output.view(-1, enc_output.size(2))
+
+    total_loss = 0.0
+    for early_exit_output in all_highway_exits:
+        loss_function = nn.CosineEmbeddingLoss()
+        early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
+        loss = loss_function(enc_output, early_exit_output, Variable(torch.Tensor(enc_output.size(0)).cuda().fill_(1.0)))
+        total_loss += loss
+    return total_loss
+        
+
+
+def cal_decoder_student_performance(pred, gold, trg_pad_idx, all_highway_exits):
     pred = pred.view(-1, pred.size(2))
     loss = cal_student_loss(pred, gold, trg_pad_idx, all_highway_exits)
 
@@ -134,7 +154,7 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing, trainin
     ''' Epoch operation in training phase'''
 
     model.train()
-    total_loss, n_word_total, n_word_correct = 0, 0, 0 
+    total_loss, n_word_total, n_word_correct, batch_count = 0, 0, 0, 0
 
     desc = '  - (Training)   '
     for batch in tqdm(training_data, mininterval=2, desc=desc, leave=False):
@@ -145,36 +165,47 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing, trainin
 
         # forward
         optimizer.zero_grad()
-        pred ,all_highway_exits, exit_layer = model(src_seq, trg_seq)
+        if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+            pred ,all_highway_exits, _ = model(src_seq, trg_seq)
+        elif training_mode == TRAIN_ENCODER:
+            enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
 
         # backward and update parameters
         if training_mode == TRAIN_BASE:
             loss, n_correct, n_word = cal_performance(
                 pred, gold, opt.trg_pad_idx, smoothing=smoothing)
         elif training_mode == TRAIN_ENCODER:
-            pass
+            loss = cal_encoder_student_performance(enc_output, all_highway_exits)
         elif training_mode == TRAIN_DECODER:
-            loss, n_correct, n_word = cal_student_performance(
+            loss, n_correct, n_word = cal_decoder_student_performance(
                 pred, gold, opt.trg_pad_idx, all_highway_exits)
             
         loss.backward()
         optimizer.step_and_update_lr()
 
         # note keeping
-        n_word_total += n_word
-        n_word_correct += n_correct
-        total_loss += loss.item()
+        if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+            n_word_total += n_word
+            n_word_correct += n_correct
+            total_loss += loss.item()
+        else:
+            batch_count +=1
+            total_loss += loss.item()
 
-    loss_per_word = total_loss/n_word_total
-    accuracy = n_word_correct/n_word_total
-    return loss_per_word, accuracy
+    if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+        loss_per_word = total_loss/n_word_total
+        accuracy = n_word_correct/n_word_total
+        return loss_per_word, accuracy
+    else:
+        loss_per_batch = total_loss/batch_count
+        return loss_per_batch, 0
 
 
-def eval_epoch(model, validation_data, device, opt):
+def eval_epoch(model, validation_data, device, opt, training_mode):
     ''' Epoch operation in evaluation phase '''
 
     model.eval()
-    total_loss, n_word_total, n_word_correct = 0, 0, 0
+    total_loss, n_word_total, n_word_correct, batch_count = 0, 0, 0, 0
 
     desc = '  - (Validation) '
     with torch.no_grad():
@@ -185,18 +216,36 @@ def eval_epoch(model, validation_data, device, opt):
             trg_seq, gold = map(lambda x: x.to(device), patch_trg(batch.trg, opt.trg_pad_idx))
 
             # forward
-            pred ,all_highway_exits, exit_layer = model(src_seq, trg_seq)
-            loss, n_correct, n_word = cal_performance(
-                pred, gold, opt.trg_pad_idx, smoothing=False)
+            if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+                pred ,all_highway_exits, _ = model(src_seq, trg_seq)
+            elif training_mode == TRAIN_ENCODER:
+                enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
+
+            if training_mode == TRAIN_BASE:
+                loss, n_correct, n_word = cal_performance(
+                    pred, gold, opt.trg_pad_idx, smoothing=False)
+            elif training_mode == TRAIN_ENCODER:
+                loss = cal_encoder_student_performance(enc_output, all_highway_exits)
+            elif training_mode == TRAIN_DECODER:
+                loss, n_correct, n_word = cal_decoder_student_performance(
+                    pred, gold, opt.trg_pad_idx, all_highway_exits)
 
             # note keeping
-            n_word_total += n_word
-            n_word_correct += n_correct
-            total_loss += loss.item()
+            if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+                n_word_total += n_word
+                n_word_correct += n_correct
+                total_loss += loss.item()
+            else:
+                batch_count += 1
+                total_loss += loss.item()
 
-    loss_per_word = total_loss/n_word_total
-    accuracy = n_word_correct/n_word_total
-    return loss_per_word, accuracy
+    if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+        loss_per_word = total_loss/n_word_total
+        accuracy = n_word_correct/n_word_total
+        return loss_per_word, accuracy
+    else:
+        loss_per_batch = total_loss/batch_count
+        return loss_per_batch, 0
 
 
 def train(model, training_data, validation_data, device, opt, training_mode):
@@ -313,7 +362,7 @@ def train(model, training_data, validation_data, device, opt, training_mode):
         print_performances('Training', train_loss, train_accu, start)
 
         start = time.time()
-        valid_loss, valid_accu = eval_epoch(model, validation_data, device, opt)
+        valid_loss, valid_accu = eval_epoch(model, validation_data, device, opt, training_mode)
         print_performances('Validation', valid_loss, valid_accu, start)
 
         valid_losses += [valid_loss]
@@ -325,7 +374,7 @@ def train(model, training_data, validation_data, device, opt, training_mode):
                 if training_mode == TRAIN_BASE:
                     model_name = opt.save_model + '_accu_{accu:3.3f}.chkpt'.format(accu=100*valid_accu)
                 elif training_mode == TRAIN_ENCODER:
-                    model_name = opt.save_model + '_accu_{accu:3.3f}_encoder_highway.chkpt'.format(accu=100*valid_accu)
+                    model_name = opt.save_model + '_loss_{loss:3.3f}_encoder_highway.chkpt'.format(valid_loss)
                 elif training_mode == TRAIN_DECODER:
                     model_name = opt.save_model + '_accu_{accu:3.3f}_decoder_highway.chkpt'.format(accu=100*valid_accu)
                 torch.save(checkpoint, model_name)
@@ -444,11 +493,11 @@ def main():
     train(high_way_transformer, training_data, validation_data, device, opt, training_mode=TRAIN_BASE)
 
     if opt.encoder_early_exit: 
-        high_way_transformer = load_model(opt, device)
+        high_way_transformer = load_model(opt, device, training_mode=TRAIN_ENCODER)
         train(high_way_transformer, training_data, validation_data, device, opt, training_mode=TRAIN_ENCODER)
 
     if opt.decoder_early_exit: 
-        high_way_transformer = load_model(opt, device)
+        high_way_transformer = load_model(opt, device, training_mode=TRAIN_DECODER)
         train(high_way_transformer, training_data, validation_data, device, opt, training_mode=TRAIN_DECODER)
 
 

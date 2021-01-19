@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformer.HighWayModels import HighWayTransformer, get_pad_mask, get_subsequent_mask, DecoderHighwayException
+from transformer.HighWayModels import HighWayTransformer, get_pad_mask, get_subsequent_mask, HighwayException
 
 
 def creat_count_early_exit_dict(n_layers):
@@ -48,7 +48,7 @@ class HighWayTranslator(nn.Module):
         trg_mask = get_subsequent_mask(trg_seq)
         try:
             dec_output, all_highway_exits, exit_layer = self.model.decoder(trg_seq, trg_mask, enc_output, src_mask, translate=translate)
-        except DecoderHighwayException as e:
+        except HighwayException as e:
             all_highway_exits = e.message
             seq_logit = all_highway_exits[-1]
             exit_layer = e.exit_layer
@@ -61,10 +61,16 @@ class HighWayTranslator(nn.Module):
             return F.softmax(self.model.trg_word_prj(dec_output), dim=-1), exit_layer
 
 
-    def _get_init_state(self, src_seq, src_mask):
+    def _get_init_state(self, src_seq, src_mask, translate):
         beam_size = self.beam_size
 
-        enc_output, *_ = self.model.encoder(src_seq, src_mask)
+        try:
+           enc_output, all_highway_exits, exit_layer, *_ = self.model.encoder(src_seq, src_mask, translate=translate)
+        except HighwayException as e:
+            all_highway_exits = e.message
+            enc_output = all_highway_exits[-1]
+            exit_layer = e.exit_layer
+
         dec_output, *_ = self._model_decode(self.init_seq, enc_output, src_mask)
         
         best_k_probs, best_k_idx = dec_output[:, -1, :].topk(beam_size)
@@ -73,7 +79,7 @@ class HighWayTranslator(nn.Module):
         gen_seq = self.blank_seqs.clone().detach()
         gen_seq[:, 1] = best_k_idx[0]
         enc_output = enc_output.repeat(beam_size, 1, 1)
-        return enc_output, gen_seq, scores
+        return enc_output, gen_seq, scores, exit_layer
 
 
     def _get_the_best_score_and_idx(self, gen_seq, dec_output, scores, step):
@@ -114,7 +120,9 @@ class HighWayTranslator(nn.Module):
         
         with torch.no_grad():
             src_mask = get_pad_mask(src_seq, src_pad_idx)
-            enc_output, gen_seq, scores = self._get_init_state(src_seq, src_mask)
+            enc_output, gen_seq, scores, encoder_exit_layer = self._get_init_state(src_seq, src_mask, translate=True)
+            if encoder_exit_layer is None:
+                encoder_exit_layer = n_layers
 
             ans_idx = 0   # default
             for step in range(2, max_seq_len):    # decode up to max length
@@ -138,4 +146,4 @@ class HighWayTranslator(nn.Module):
                     _, ans_idx = scores.div(seq_lens.float() ** alpha).max(0)
                     ans_idx = ans_idx.item()
                     break
-        return gen_seq[ans_idx][:seq_lens[ans_idx]].tolist(), exit_layer_dict
+        return gen_seq[ans_idx][:seq_lens[ans_idx]].tolist(), encoder_exit_layer, exit_layer_dict

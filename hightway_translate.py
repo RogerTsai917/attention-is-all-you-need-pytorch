@@ -59,7 +59,7 @@ def merge_two_dict(origin_dict, new_dict):
     return origin_dict
 
 
-def main(entropy=0.0):
+def main(similarity=1.0, entropy=0.0):
     '''Main Function'''
 
     parser = argparse.ArgumentParser(description='translate.py')
@@ -108,36 +108,40 @@ def main(entropy=0.0):
         trg_eos_idx=opt.trg_eos_idx).to(device)
 
     # set the early exit threshold
+    translator.model.encoder.set_early_exit_similarity(similarity)
     translator.model.decoder.set_early_exit_entropy(entropy)
 
     checkpoint = torch.load(opt.model, map_location=device)
     model_opt = checkpoint['settings']
     n_layers=model_opt.n_layers
-    tatoal_exit_layer_dict = creat_count_early_exit_dict(n_layers)
+    tatoal_encoder_exit_layer_dict = creat_count_early_exit_dict(n_layers)
+    tatoal_decoder_exit_layer_dict = creat_count_early_exit_dict(n_layers)
 
     unk_idx = SRC.vocab.stoi[SRC.unk_token]
-    output_file_name = os.path.join(opt.save_folder, "prediction_" + str(entropy) + ".txt") 
+    output_file_name = os.path.join(opt.save_folder, "prediction_similarity_" + str(similarity) + "_entropy_" + str(entropy) + ".txt") 
     with open(output_file_name, 'w') as f:
         total_words = 0
         start_time = time.time()
         for example in tqdm(test_loader, mininterval=2, desc='  - (Test)', leave=False):
             #print(' '.join(example.src))
             src_seq = [SRC.vocab.stoi.get(word, unk_idx) for word in example.src]
-            pred_seq, exit_layer_dict = translator.translate_sentence(torch.LongTensor([src_seq]).to(device), n_layers)
+            pred_seq, encoder_exit_layer, decoder_exit_layer_dict = translator.translate_sentence(torch.LongTensor([src_seq]).to(device), n_layers)
             # print("pred_seq ", pred_seq)
             pred_line = ' '.join(TRG.vocab.itos[idx] for idx in pred_seq)
             # print("pred_line ", pred_line)
             total_words += len(pred_line.split(" ")) - 2
             pred_line = pred_line.replace(Constants.BOS_WORD, '').replace(Constants.EOS_WORD, '')
             f.write(pred_line.strip() + '\n')
-            tatoal_exit_layer_dict = merge_two_dict(tatoal_exit_layer_dict, exit_layer_dict)
+            tatoal_encoder_exit_layer_dict[encoder_exit_layer] += 1
+            tatoal_decoder_exit_layer_dict = merge_two_dict(tatoal_decoder_exit_layer_dict, decoder_exit_layer_dict)
         end_time = time.time()
     run_time = end_time - start_time
     print('[Info] Finished.')
 
 
-    print("[Info] Predict Finished with entropy: ", entropy)
-    print("[Info] Early exit dict: ", tatoal_exit_layer_dict)
+    print("[Info] Predict finished with entropy: ", entropy)
+    print("[Info] Encoder early exit dict: ", tatoal_encoder_exit_layer_dict)
+    print("[Info] Decoder early exit dict: ", tatoal_decoder_exit_layer_dict)
     print("[Info] Total time: ", run_time)
     print("[Info] Total predict words: ", total_words)
     print("[Info] average predict a word time: ", run_time/total_words)
@@ -145,7 +149,8 @@ def main(entropy=0.0):
     output_record_file_name = os.path.join(opt.save_folder, "prediction_record.txt")
     with open(output_record_file_name, 'a') as f:
         f.write("Predict with entropy: " + str(entropy) + "\n")
-        f.write("Early exit dict: " + str(tatoal_exit_layer_dict) + "\n")
+        f.write("Encoder early exit dict: " + str(tatoal_encoder_exit_layer_dict) + "\n")
+        f.write("Decoder early exit dict: " + str(tatoal_decoder_exit_layer_dict) + "\n")
         f.write("Total time: " + str(run_time) + "\n")
         f.write("Total predict words: " + str(total_words) + "\n")
         f.write("average predict a word time: " + str(run_time/total_words) + "\n")
@@ -156,11 +161,10 @@ if __name__ == "__main__":
     '''
     Usage: python hightway_translate.py -model model/base_early_exit/trained_highway.chkpt -data m30k_deen_shr.pkl -save_folder prediction/encoder_3_decoder_early_exit
     '''
-    # entropy_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
-    #                 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9,
-    #                 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0]
+    
+    encoder_similarity = 0.98
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
     
     for entropy in entropy_list:   
-        main(entropy)
+        main(encoder_similarity, entropy)
