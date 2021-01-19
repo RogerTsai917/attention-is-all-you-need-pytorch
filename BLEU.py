@@ -33,7 +33,6 @@ if __name__ == "__main__":
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
     
-    
 
     for entropy in entropy_list:
         answer_file_name = "prediction/test2016.en.txt" 

@@ -25,9 +25,8 @@ def load_model(opt, device):
         model_opt.src_pad_idx,
         model_opt.trg_pad_idx,
 
-        
-        encoder_early_exit=model_opt.encoder_early_exit,
-        decoder_early_exit=model_opt.decoder_early_exit,
+        encoder_early_exit=opt.encoder_early_exit,
+        decoder_early_exit=opt.decoder_early_exit,
         trg_emb_prj_weight_sharing=model_opt.proj_share_weight,
         emb_src_trg_weight_sharing=model_opt.embs_share_weight,
         encoder_weight_sharing=model_opt.encoder_share_weight,
@@ -72,6 +71,8 @@ def main(similarity=1.0, entropy=0.0):
     parser.add_argument('-beam_size', type=int, default=1)
     parser.add_argument('-max_seq_len', type=int, default=100)
     parser.add_argument('-no_cuda', action='store_true')
+    parser.add_argument('-encoder_early_exit', action='store_true')
+    parser.add_argument('-decoder_early_exit', action='store_true')
 
     # TODO: Translate bpe encoded files 
     #parser.add_argument('-src', required=True,
@@ -162,7 +163,7 @@ if __name__ == "__main__":
     Usage: python hightway_translate.py -model model/base_early_exit/trained_highway.chkpt -data m30k_deen_shr.pkl -save_folder prediction/encoder_3_decoder_early_exit
     '''
     
-    encoder_similarity = 0.98
+    encoder_similarity = 0.95
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
     
