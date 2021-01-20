@@ -116,19 +116,19 @@ class HighWayEncoder(nn.Module):
             
             enc_slf_attn_list += [enc_slf_attn] if return_attns else []
 
-
             if self.early_exit:
                 highway_seq_logit = self.encoder_highway[layer_number](enc_output)
                 all_highway_exits += [highway_seq_logit]
 
                 if not self.training and translate and layer_number > 0:
                     similarity = cosine_similarity(all_highway_exits[layer_number-1], all_highway_exits[layer_number])
-                    # print("layer ", layer_number, "similarity ", similarity)
+                    print("layer ", layer_number, "similarity ", similarity)
                     if similarity > self.early_exit_similarity[layer_number]:
                         raise HighwayException(all_highway_exits, layer_number + 1)
             
             if early_exit_layer != None and layer_number+1 == early_exit_layer:
                 break
+
         if return_attns:
             return enc_output, all_highway_exits, None, enc_slf_attn_list
         return enc_output, all_highway_exits, None
@@ -212,7 +212,7 @@ class HighWayTransformer(nn.Module):
             n_layers=6, n_head=8, d_k=64, d_v=64, dropout=0.1, n_position=200,
             trg_emb_prj_weight_sharing=True, emb_src_trg_weight_sharing=True,
             encoder_early_exit=False, decoder_early_exit=False,
-            encoder_weight_sharing=False, decoder_weight_sharing=False,):
+            encoder_weight_sharing=False, decoder_weight_sharing=False):
 
         super().__init__()
 

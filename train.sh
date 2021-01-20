@@ -7,6 +7,8 @@ python train_faster_encoder_decoder.py\
     -decoder_early_exit\
     -embs_share_weight\
     -proj_share_weight\
+    -encoder_share_weight\
+    -decoder_share_weight\
     -label_smoothing\
     -save_model trained\
     -train_b 128\
