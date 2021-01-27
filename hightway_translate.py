@@ -163,7 +163,7 @@ if __name__ == "__main__":
     Usage: python hightway_translate.py -model model/base_early_exit/trained_highway.chkpt -data m30k_deen_shr.pkl -save_folder prediction/encoder_3_decoder_early_exit
     '''
     
-    encoder_similarity = 0.95
+    encoder_similarity = 4
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
     

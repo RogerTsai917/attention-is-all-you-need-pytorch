@@ -101,6 +101,7 @@ class HighWayEncoder(nn.Module):
     
     def forward(self, src_seq, src_mask, return_attns=False, early_exit_layer=None, translate=False):
 
+        encoder_exit_layer = None
         enc_slf_attn_list, all_highway_exits = [], []
 
         # -- Forward
@@ -122,16 +123,19 @@ class HighWayEncoder(nn.Module):
 
                 if not self.training and translate and layer_number > 0:
                     similarity = cosine_similarity(all_highway_exits[layer_number-1], all_highway_exits[layer_number])
-                    print("layer ", layer_number, "similarity ", similarity)
+                    # print("layer ", layer_number, "similarity ", similarity)
                     if similarity > self.early_exit_similarity[layer_number]:
+                        # all_highway_exits += [enc_output]
                         raise HighwayException(all_highway_exits, layer_number + 1)
             
             if early_exit_layer != None and layer_number+1 == early_exit_layer:
+                enc_output = all_highway_exits[-1]
+                encoder_exit_layer = early_exit_layer
                 break
 
         if return_attns:
-            return enc_output, all_highway_exits, None, enc_slf_attn_list
-        return enc_output, all_highway_exits, None
+            return enc_output, all_highway_exits, encoder_exit_layer, enc_slf_attn_list
+        return enc_output, all_highway_exits, encoder_exit_layer
 
 
 class HighWayDecoder(nn.Module):
