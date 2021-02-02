@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import time
 from transformer.Layers import EncoderLayer, DecoderLayer, HighWayLayer
 
 def cosine_similarity(input1, input2):
@@ -12,6 +13,16 @@ def cosine_similarity(input1, input2):
     output = cos(input1, input2)
     output = output.sum()
     return output.item()/input1.size(0)
+
+
+def last_layer_cosine_similarity(input1, input2):
+    input1 = input1[:, -1, :]
+    input2 = input2[:, -1, :]
+    cos = nn.CosineSimilarity(dim=1, eps=1e-8)
+    output = cos(input1, input2)
+    output = output.sum()
+    return output.item()/input1.size(0)
+
 
 def entropy(x):
     """Calculate entropy of a pre-softmax logit Tensor"""
@@ -100,7 +111,7 @@ class HighWayEncoder(nn.Module):
             self.early_exit_similarity = x
     
     def forward(self, src_seq, src_mask, return_attns=False, early_exit_layer=None, translate=False):
-
+        print()
         encoder_exit_layer = None
         enc_slf_attn_list, all_highway_exits = [], []
 
@@ -158,9 +169,14 @@ class HighWayDecoder(nn.Module):
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
         
+        # # create highway layer
+        # self.decoder_highway = nn.ModuleList(
+        #     [HighWayLayer(d_model, n_trg_vocab, bias=False)
+        #     for _ in range(n_layers)])
+
         # create highway layer
         self.decoder_highway = nn.ModuleList(
-            [HighWayLayer(d_model, n_trg_vocab, bias=False)
+            [HighWayLayer(d_model, d_model, bias=False)
             for _ in range(n_layers)])
 
         # create a entropy list for early exit threshold
@@ -193,14 +209,20 @@ class HighWayDecoder(nn.Module):
             dec_enc_attn_list += [dec_enc_attn] if return_attns else []
 
             if self.early_exit:
-                highway_seq_logit = self.decoder_highway[layer_number](dec_output)
-                all_highway_exits += [highway_seq_logit]
+                highway_seq_logit = self.decoder_highway[layer_number](dec_output[:, -1, :])
+                all_highway_exits += [highway_seq_logit.unsqueeze(1)]
 
-                if not self.training and translate:
-                    highway_entropy = entropy(highway_seq_logit[0])[-1]
-                    if highway_entropy < self.early_exit_entropy[layer_number]:
-                        raise HighwayException(all_highway_exits, layer_number + 1)
+                if not self.training and translate and layer_number > 0:
+                    similarity = last_layer_cosine_similarity(all_highway_exits[-1], all_highway_exits[-2])
+                    # print("layer ", layer_number, "similarity ", similarity)
+                
+                #     highway_entropy = entropy(highway_seq_logit[0])[-1]
+                #     if highway_entropy < self.early_exit_entropy[layer_number]:
+                #         raise HighwayException(all_highway_exits, layer_number + 1)
 
+        for i, early_exit in enumerate(all_highway_exits):
+            print("layer: ", i, " similarity: ", last_layer_cosine_similarity(early_exit, dec_output))
+        
         if return_attns:
             return dec_output, all_highway_exits, None, dec_slf_attn_list, dec_enc_attn_list
         
@@ -256,16 +278,19 @@ class HighWayTransformer(nn.Module):
             self.encoder.src_word_emb.weight = self.decoder.trg_word_emb.weight
 
 
-    def forward(self, src_seq, trg_seq, encoder_exit=False):
+    def forward(self, src_seq, trg_seq, train_encoder_exit=False, train_decoder_exit=False):
 
         src_mask = get_pad_mask(src_seq, self.src_pad_idx)
         trg_mask = get_pad_mask(trg_seq, self.trg_pad_idx) & get_subsequent_mask(trg_seq)
 
         enc_output, encoder_all_highway_exits, encoder_exit_layer, *_ = self.encoder(src_seq, src_mask)
-        if encoder_exit:
+        if train_encoder_exit:
             return enc_output, encoder_all_highway_exits, encoder_exit_layer
         else:
             dec_output, decoder_all_highway_exits, decoder_exit_layer, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
-            seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
-            # reshape the tensor and return
-            return seq_logit, decoder_all_highway_exits, decoder_exit_layer
+            if train_decoder_exit:
+                return dec_output, decoder_all_highway_exits, decoder_exit_layer
+            else:
+                seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
+                # reshape the tensor and return
+                return seq_logit, decoder_all_highway_exits, decoder_exit_layer

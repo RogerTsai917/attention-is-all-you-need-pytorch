@@ -149,6 +149,7 @@ def main(similarity=1.0, entropy=0.0):
 
     output_record_file_name = os.path.join(opt.save_folder, "prediction_record.txt")
     with open(output_record_file_name, 'a') as f:
+        f.write("Predict with similarity: " + str(similarity) + "\n")
         f.write("Predict with entropy: " + str(entropy) + "\n")
         f.write("Encoder early exit dict: " + str(tatoal_encoder_exit_layer_dict) + "\n")
         f.write("Decoder early exit dict: " + str(tatoal_decoder_exit_layer_dict) + "\n")

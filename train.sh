@@ -1,14 +1,11 @@
 #!/bin/bash
 
-python train_faster_encoder_decoder.py\
+python train_faster_former_v3.py\
     -data_pkl m30k_deen_shr.pkl\
     -log m30k_deen_shr\
-    -encoder_early_exit\
     -decoder_early_exit\
     -embs_share_weight\
     -proj_share_weight\
-    -encoder_share_weight\
-    -decoder_share_weight\
     -label_smoothing\
     -save_model trained\
     -train_b 128\
