@@ -27,15 +27,15 @@ def main(answer_file_name, predict_file_name, entropy):
 
 if __name__ == "__main__":
 
-    predict_folder = "smaller_early_exit_base_2"
+    predict_folder = "early_exit_base"
 
-    encoder_similarity = 4
+    encoder_similarity = 1
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
     
 
     for entropy in entropy_list:
         answer_file_name = "prediction/test2016.en.txt" 
-        # predict_file_name = "prediction/" + predict_folder + "/prediction_" + str(entropy) + ".txt"
-        predict_file_name = "prediction/" + predict_folder + "/prediction_similarity_" + str(encoder_similarity) + "_entropy_" + str(entropy) + ".txt"
+        predict_file_name = "prediction/" + predict_folder + "/prediction_" + str(entropy) + ".txt"
+        # predict_file_name = "prediction/" + predict_folder + "/prediction_similarity_" + str(encoder_similarity) + "_entropy_" + str(entropy) + ".txt"
         main(answer_file_name, predict_file_name, entropy)

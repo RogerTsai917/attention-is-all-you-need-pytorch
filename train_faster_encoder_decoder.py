@@ -81,7 +81,8 @@ def cal_decoder_student_performance(pred, gold, trg_pad_idx, all_highway_exits):
     gold = gold.contiguous().view(-1)
     non_pad_mask = gold.ne(trg_pad_idx)
     for early_exit_output in all_highway_exits:
-        early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
+        # early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
+        early_exit_output = early_exit_output.view(-1, early_exit_output.size(-1))
         early_exit_output = early_exit_output.max(1)[1]
         n_correct += early_exit_output.eq(gold).masked_select(non_pad_mask).sum().item()
     n_correct = n_correct // len(all_highway_exits)
@@ -97,7 +98,8 @@ def cal_student_loss(pred, gold, trg_pad_idx, all_highway_exits):
     
     total_loss = 0.0
     for early_exit_output in all_highway_exits:
-        early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
+        # early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
+        early_exit_output = early_exit_output.view(-1, early_exit_output.size(-1))
         log_early_exit_output = F.log_softmax(early_exit_output, dim=1)
 
         loss = -(log_prb * log_early_exit_output).sum(dim=1)

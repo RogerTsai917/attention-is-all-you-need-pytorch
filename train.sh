@@ -1,6 +1,6 @@
 #!/bin/bash
 
-python train_faster_former_v3.py\
+python train_faster_encoder_decoder.py\
     -data_pkl m30k_deen_shr.pkl\
     -log m30k_deen_shr\
     -decoder_early_exit\
@@ -12,5 +12,4 @@ python train_faster_former_v3.py\
     -val_b 128\
     -warmup 128000\
     -base_epoch 400\
-    -highway_encoder_epoch 200\
     -highway_decoder_epoch 200
