@@ -207,7 +207,7 @@ class HighWayDecoder(nn.Module):
             dec_slf_attn_list += [dec_slf_attn] if return_attns else []
             dec_enc_attn_list += [dec_enc_attn] if return_attns else []
 
-            if self.early_exit:
+            if self.early_exit and layer_number < self.n_layers:
                 # highway_seq_logit = self.decoder_highway[layer_number](dec_output[:, -1, :])
                 highway_seq_logit = self.decoder_highway[layer_number](dec_output)
                 all_highway_exits += [highway_seq_logit]

@@ -36,6 +36,6 @@ if __name__ == "__main__":
 
     for entropy in entropy_list:
         answer_file_name = "prediction/test2016.en.txt" 
-        predict_file_name = "prediction/" + predict_folder + "/prediction_" + str(entropy) + ".txt"
-        # predict_file_name = "prediction/" + predict_folder + "/prediction_similarity_" + str(encoder_similarity) + "_entropy_" + str(entropy) + ".txt"
+        # predict_file_name = "prediction/" + predict_folder + "/prediction_" + str(entropy) + ".txt"
+        predict_file_name = "prediction/" + predict_folder + "/prediction_similarity_" + str(encoder_similarity) + "_entropy_" + str(entropy) + ".txt"
         main(answer_file_name, predict_file_name, entropy)

@@ -58,6 +58,53 @@ def merge_two_dict(origin_dict, new_dict):
     return origin_dict
 
 
+def encoder_layer(model_opt):
+    total_flops = 0.0
+
+    q = model_opt.d_model * model_opt.d_model * model_opt.n_head * model_opt.d_k
+    k = model_opt.d_model * model_opt.d_model * model_opt.n_head * model_opt.d_k
+    v = model_opt.d_model * model_opt.d_model * model_opt.n_head * model_opt.d_v
+    total_flops += q + k + v
+
+    ScaledDotProductAttention = model_opt.d_model * ((model_opt.n_head * model_opt.d_k) + (model_opt.n_head * model_opt.d_k) + (model_opt.n_head * model_opt.d_v))
+    Attention_linear = model_opt.d_model * model_opt.n_head * model_opt.d_v * model_opt.d_model
+    PositionwiseFeedForward = model_opt.d_model * ((model_opt.d_model * model_opt.d_inner_hid) + (model_opt.d_inner_hid * model_opt.d_model))
+    total_flops += ScaledDotProductAttention + Attention_linear + PositionwiseFeedForward
+    return total_flops
+
+
+def decoder_layer(model_opt):
+    total_flops = 0.0
+
+    q = model_opt.d_model * model_opt.d_model * model_opt.n_head * model_opt.d_k
+    k = model_opt.d_model * model_opt.d_model * model_opt.n_head * model_opt.d_k
+    v = model_opt.d_model * model_opt.d_model * model_opt.n_head * model_opt.d_v
+    total_flops += q + k + v
+
+    ScaledDotProductAttention = model_opt.d_model * ((model_opt.n_head * model_opt.d_k) + (model_opt.n_head * model_opt.d_k) + (model_opt.n_head * model_opt.d_v))
+    Attention_linear = model_opt.d_model * model_opt.n_head * model_opt.d_v * model_opt.d_model
+    PositionwiseFeedForward = model_opt.d_model * ((model_opt.d_model * model_opt.d_inner_hid) + (model_opt.d_inner_hid * model_opt.d_model))
+    total_flops += 2 * (ScaledDotProductAttention + Attention_linear + PositionwiseFeedForward)
+    return total_flops
+
+
+def predict_layer(model_opt):
+    return model_opt.d_model * model_opt.n_head * model_opt.d_k * model_opt.trg_vocab_size
+
+def calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict):
+    total_flops = 0.0
+    encoder_layer_FLOPs = encoder_layer(model_opt)
+    decoder_layer_FLOPs = decoder_layer(model_opt)
+    predict_layer_FLOPS = predict_layer(model_opt)
+
+    total_flops += encoder_exit_layer * encoder_layer_FLOPs
+    for key in decoder_exit_layer_dict.keys():
+        total_flops += decoder_exit_layer_dict[key] * decoder_layer_FLOPs 
+        total_flops += predict_layer_FLOPS
+
+    return total_flops
+
+
 def main(similarity=1.0, entropy=0.0):
     '''Main Function'''
 
@@ -121,16 +168,18 @@ def main(similarity=1.0, entropy=0.0):
     unk_idx = SRC.vocab.stoi[SRC.unk_token]
     output_file_name = os.path.join(opt.save_folder, "prediction_similarity_" + str(similarity) + "_entropy_" + str(entropy) + ".txt") 
     with open(output_file_name, 'w') as f:
-        total_words = 0
+        total_encoder_words = 0
+        total_deocder_words = 0
+        total_FLOPs = 0
+
         start_time = time.time()
         for example in tqdm(test_loader, mininterval=2, desc='  - (Test)', leave=False):
-            #print(' '.join(example.src))
             src_seq = [SRC.vocab.stoi.get(word, unk_idx) for word in example.src]
+            total_encoder_words += len(src_seq)
             pred_seq, encoder_exit_layer, decoder_exit_layer_dict = translator.translate_sentence(torch.LongTensor([src_seq]).to(device), n_layers)
-            # print("pred_seq ", pred_seq)
             pred_line = ' '.join(TRG.vocab.itos[idx] for idx in pred_seq)
-            # print("pred_line ", pred_line)
-            total_words += len(pred_line.split(" ")) - 2
+            total_deocder_words += len(pred_line.split(" ")) - 2
+            total_FLOPs += calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict)
             pred_line = pred_line.replace(Constants.BOS_WORD, '').replace(Constants.EOS_WORD, '')
             f.write(pred_line.strip() + '\n')
             tatoal_encoder_exit_layer_dict[encoder_exit_layer] += 1
@@ -143,9 +192,12 @@ def main(similarity=1.0, entropy=0.0):
     print("[Info] Predict finished with entropy: ", entropy)
     print("[Info] Encoder early exit dict: ", tatoal_encoder_exit_layer_dict)
     print("[Info] Decoder early exit dict: ", tatoal_decoder_exit_layer_dict)
+    print("[Info] Total input words: ", total_encoder_words)
     print("[Info] Total time: ", run_time)
-    print("[Info] Total predict words: ", total_words)
-    print("[Info] average predict a word time: ", run_time/total_words)
+    print("[Info] Total predict words: ", total_deocder_words)
+    print("[Info] Average predict a word time: ", run_time/total_deocder_words)
+    print("[Info] Total FLOPs: ", int(total_FLOPs/1000000), "M")
+    print("[Info] Average predict a word FLOPs: ", int(total_FLOPs/total_deocder_words/1000000), "M")
 
     output_record_file_name = os.path.join(opt.save_folder, "prediction_record.txt")
     with open(output_record_file_name, 'a') as f:
@@ -153,9 +205,12 @@ def main(similarity=1.0, entropy=0.0):
         f.write("Predict with entropy: " + str(entropy) + "\n")
         f.write("Encoder early exit dict: " + str(tatoal_encoder_exit_layer_dict) + "\n")
         f.write("Decoder early exit dict: " + str(tatoal_decoder_exit_layer_dict) + "\n")
+        f.write("Total input words: " + str(total_encoder_words) + "\n")
         f.write("Total time: " + str(run_time) + "\n")
-        f.write("Total predict words: " + str(total_words) + "\n")
-        f.write("average predict a word time: " + str(run_time/total_words) + "\n")
+        f.write("Total predict words: " + str(total_deocder_words) + "\n")
+        f.write("Average predict a word time: " + str(run_time/total_deocder_words) + "\n")
+        f.write("Total FLOPs: " + str(int(total_FLOPs/1000000)) + "M" + "\n")
+        f.write("Average predict a word FLOPs: " + str(total_FLOPs/total_deocder_words/1000000) + "M" + "\n")
         f.write("\n")
 
 

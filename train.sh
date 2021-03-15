@@ -8,7 +8,7 @@ python train_faster_encoder_decoder.py\
     -proj_share_weight\
     -label_smoothing\
     -save_model trained\
-    -train_b 128\
+    -train_b 1\
     -val_b 128\
     -warmup 128000\
     -base_epoch 400\

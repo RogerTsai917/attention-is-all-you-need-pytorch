@@ -56,8 +56,6 @@ class HighWayTranslator(nn.Module):
         if exit_layer != None:
             return seq_logit, exit_layer
         else:
-            # print((F.softmax(self.model.trg_word_prj(dec_output), dim=-1)).shape)
-            # print(all_highway_exits[-1].shape)
             return F.softmax(self.model.trg_word_prj(dec_output), dim=-1), exit_layer
 
 
