@@ -3,7 +3,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformer.HighWayModels import HighWayTransformer, get_pad_mask, get_subsequent_mask, HighwayException
+from transformer.CacheHighWayModels import HighWayTransformer, get_pad_mask, get_subsequent_mask, HighwayException
+import transformer.Constants as Constants
+from transformer.Cache import CacheVocabulary
 
 
 def creat_count_early_exit_dict(n_layers):
@@ -54,7 +56,7 @@ class HighWayTranslator(nn.Module):
             exit_layer = e.exit_layer
 
         if exit_layer != None:
-            return seq_logit, exit_layer
+            return F.softmax(seq_logit, dim=-1), exit_layer
         else:
             return F.softmax(self.model.trg_word_prj(dec_output), dim=-1), exit_layer
 
@@ -80,14 +82,14 @@ class HighWayTranslator(nn.Module):
         return enc_output, gen_seq, scores, exit_layer
 
 
-    def _get_the_best_score_and_idx(self, gen_seq, dec_output, scores, step):
+    def _get_the_best_score_and_idx(self, gen_seq, dec_output, scores, step, cache_vocab_dict, TRG, exit_layer):
         assert len(scores.size()) == 1
         
         beam_size = self.beam_size
 
         # Get k candidates for each beam, k^2 candidates in total.
         best_k2_probs, best_k2_idx = dec_output[:, -1, :].topk(beam_size)
-
+        
         # Include the previous scores.
         scores = torch.log(best_k2_probs).view(beam_size, -1) + scores.view(beam_size, 1)
 
@@ -97,6 +99,12 @@ class HighWayTranslator(nn.Module):
         # Get the corresponding positions of the best k candidiates.
         best_k_r_idxs, best_k_c_idxs = best_k_idx_in_k2 // beam_size, best_k_idx_in_k2 % beam_size
         best_k_idx = best_k2_idx[best_k_r_idxs, best_k_c_idxs]
+        
+        # change best_k_idx by exit_layer and cache_vocab_dict
+        if exit_layer != None:
+            cache_word = cache_vocab_dict[exit_layer-1].value_word[best_k_idx.tolist()[0]]
+            best_k_idx = TRG.vocab.stoi.get(cache_word, Constants.UNK_WORD)
+            best_k_idx = torch.tensor([best_k_idx])
 
         # Copy the corresponding previous tokens.
         gen_seq[:, :step] = gen_seq[best_k_r_idxs, :step]
@@ -106,7 +114,7 @@ class HighWayTranslator(nn.Module):
         return gen_seq, scores
 
 
-    def translate_sentence(self, src_seq, n_layers):
+    def translate_sentence(self, src_seq, n_layers, cache_vocab_dict, TRG):
         # Only accept batch size equals to 1 in this function.
         # TODO: expand to batch operation.
         assert src_seq.size(0) == 1
@@ -131,7 +139,7 @@ class HighWayTranslator(nn.Module):
                 else:
                     exit_layer_dict[n_layers] += 1
 
-                gen_seq, scores = self._get_the_best_score_and_idx(gen_seq, dec_output, scores, step)
+                gen_seq, scores = self._get_the_best_score_and_idx(gen_seq, dec_output, scores, step, cache_vocab_dict, TRG, exit_layer)
 
                 # Check if all path finished
                 # -- locate the eos in the generated sequences

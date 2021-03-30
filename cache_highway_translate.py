@@ -2,6 +2,7 @@
 
 import os
 import time
+import math
 import torch
 import argparse
 import dill as pickle
@@ -9,11 +10,12 @@ from tqdm import tqdm
 
 import transformer.Constants as Constants
 from torchtext.data import Dataset
-from transformer.HighWayModels import HighWayTransformer
-from transformer.HighWayTranslator import HighWayTranslator
+from transformer.CacheHighWayModels import HighWayTransformer
+from transformer.CacheHighWayTranslator import HighWayTranslator
+from transformer.Cache import CacheVocabulary
 
 
-def load_model(opt, device):
+def load_model(opt, device, cache_vocab_dict):
 
     checkpoint = torch.load(opt.model, map_location=device)
     model_opt = checkpoint['settings']
@@ -38,7 +40,8 @@ def load_model(opt, device):
         d_inner=model_opt.d_inner_hid,
         n_layers=model_opt.n_layers,
         n_head=model_opt.n_head,
-        dropout=model_opt.dropout).to(device)
+        dropout=model_opt.dropout,
+        cache_vocab_dict=cache_vocab_dict).to(device)
 
     model.load_state_dict(checkpoint['model'])
     print('[Info] Trained model state loaded.')
@@ -91,7 +94,7 @@ def decoder_layer(model_opt):
 def predict_layer(model_opt):
     return model_opt.d_model * model_opt.n_head * model_opt.d_k * model_opt.trg_vocab_size
 
-def calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict):
+def calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict, cache_vocab_dict):
     total_flops = 0.0
     encoder_layer_FLOPs = encoder_layer(model_opt)
     decoder_layer_FLOPs = decoder_layer(model_opt)
@@ -103,6 +106,49 @@ def calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict):
         total_flops += predict_layer_FLOPS
 
     return total_flops
+
+
+def add_lsit_to_dict(_list, _dict):
+    for value in _list:
+        if value not in _dict:
+            _dict[value] = 1
+        else:
+            _dict[value] += 1
+    return _dict
+
+
+def perpare_cache_vocab(opt):
+    data = pickle.load(open(opt.data_pkl, 'rb'))
+    SRC, TRG = data['vocab']['src'], data['vocab']['trg']
+    print('[Info] Get vocabulary size:', len(TRG.vocab))
+
+    fields = {'src': data['vocab']['src'], 'trg':data['vocab']['trg']}
+    train = Dataset(examples=data['train'], fields=fields)
+    unk_idx = SRC.vocab.stoi[SRC.unk_token]
+
+    words_frequency = {}
+    for example in tqdm(train, mininterval=0.1, desc='  - (train)', leave=False):
+        sentence = [Constants.BOS_WORD] + example.trg + [Constants.EOS_WORD]
+        sentence = [TRG.vocab.stoi.get(word, unk_idx) for word in sentence]
+        words_frequency = add_lsit_to_dict(sentence, words_frequency)
+
+    sorted_words_frquency = dict(sorted(words_frequency.items(), key=lambda item: item[1], reverse=True))
+
+    len_ = math.pow(len(sorted_words_frquency), 1.0/6)
+
+    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 256, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 512, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 1024, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 2048, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, len(sorted_words_frquency), Constants.UNK_WORD, Constants.PAD_WORD)
+    
+    result_dict = {
+                0: cache_vocab_0,
+                1: cache_vocab_1,
+                2: cache_vocab_2,
+                3: cache_vocab_3,
+                4: cache_vocab_4}
+    return result_dict, TRG
 
 
 def main(similarity=1.0, entropy=0.0):
@@ -121,18 +167,6 @@ def main(similarity=1.0, entropy=0.0):
     parser.add_argument('-encoder_early_exit', action='store_true')
     parser.add_argument('-decoder_early_exit', action='store_true')
 
-    # TODO: Translate bpe encoded files 
-    #parser.add_argument('-src', required=True,
-    #                    help='Source sequence to decode (one line per sequence)')
-    #parser.add_argument('-vocab', required=True,
-    #                    help='Source sequence to decode (one line per sequence)')
-    # TODO: Batch translation
-    #parser.add_argument('-batch_size', type=int, default=30,
-    #                    help='Batch size')
-    #parser.add_argument('-n_best', type=int, default=1,
-    #                    help="""If verbose is set, will output the n_best
-    #                    decoded sentences""")
-
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
 
@@ -145,9 +179,11 @@ def main(similarity=1.0, entropy=0.0):
 
     test_loader = Dataset(examples=data['test'], fields={'src': SRC, 'trg': TRG})
     
+    cache_vocab_dict, TRG = perpare_cache_vocab(opt)
+    
     device = torch.device('cuda' if opt.cuda else 'cpu')
     translator = HighWayTranslator(
-        model=load_model(opt, device),
+        model=load_model(opt, device, cache_vocab_dict),
         beam_size=opt.beam_size,
         max_seq_len=opt.max_seq_len,
         src_pad_idx=opt.src_pad_idx,
@@ -176,11 +212,11 @@ def main(similarity=1.0, entropy=0.0):
         for example in tqdm(test_loader, mininterval=2, desc='  - (Test)', leave=False):
             src_seq = [SRC.vocab.stoi.get(word, unk_idx) for word in example.src]
             total_encoder_words += len(src_seq)
-            pred_seq, encoder_exit_layer, decoder_exit_layer_dict = translator.translate_sentence(torch.LongTensor([src_seq]).to(device), n_layers)
-            total_FLOPs += calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict)
-            print(pred_seq)
+            pred_seq, encoder_exit_layer, decoder_exit_layer_dict = translator.translate_sentence(torch.LongTensor([src_seq]).to(device), n_layers, cache_vocab_dict, TRG)
+            # total_FLOPs += calculate_FLOPs(model_opt, encoder_exit_layer, decoder_exit_layer_dict, cache_vocab_dict)
+            # print(pred_seq)
             pred_line = ' '.join(TRG.vocab.itos[idx] for idx in pred_seq)
-            print(pred_line)
+            # print(pred_line)
             total_deocder_words += len(pred_line.split(" ")) - 2
             pred_line = pred_line.replace(Constants.BOS_WORD, '').replace(Constants.EOS_WORD, '')
             f.write(pred_line.strip() + '\n')
@@ -198,8 +234,8 @@ def main(similarity=1.0, entropy=0.0):
     print("[Info] Total time: ", run_time)
     print("[Info] Total predict words: ", total_deocder_words)
     print("[Info] Average predict a word time: ", run_time/total_deocder_words)
-    print("[Info] Total FLOPs: ", int(total_FLOPs/1000000), "M")
-    print("[Info] Average predict a word FLOPs: ", int(total_FLOPs/total_deocder_words/1000000), "M")
+    # print("[Info] Total FLOPs: ", int(total_FLOPs/1000000), "M")
+    # print("[Info] Average predict a word FLOPs: ", int(total_FLOPs/total_deocder_words/1000000), "M")
 
     output_record_file_name = os.path.join(opt.save_folder, "prediction_record.txt")
     with open(output_record_file_name, 'a') as f:
@@ -211,8 +247,8 @@ def main(similarity=1.0, entropy=0.0):
         f.write("Total time: " + str(run_time) + "\n")
         f.write("Total predict words: " + str(total_deocder_words) + "\n")
         f.write("Average predict a word time: " + str(run_time/total_deocder_words) + "\n")
-        f.write("Total FLOPs: " + str(int(total_FLOPs/1000000)) + "M" + "\n")
-        f.write("Average predict a word FLOPs: " + str(total_FLOPs/total_deocder_words/1000000) + "M" + "\n")
+        # f.write("Total FLOPs: " + str(int(total_FLOPs/1000000)) + "M" + "\n")
+        # f.write("Average predict a word FLOPs: " + str(total_FLOPs/total_deocder_words/1000000) + "M" + "\n")
         f.write("\n")
 
 
@@ -224,6 +260,7 @@ if __name__ == "__main__":
     encoder_similarity = 1
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
+    # entropy_list = [0.0, 1.5, 3.0]
     
     for entropy in entropy_list:   
         main(encoder_similarity, entropy)

@@ -76,7 +76,7 @@ def transform_gold_by_cache_vocab(gold, cache_vocab, TRG):
     for element in gold:
         word = TRG.vocab.itos[element]
         if word == Constants.PAD_WORD:
-            cache_gold.append(-1)
+            cache_gold.append(1)
         elif word not in cache_vocab.word_value:
             cache_gold.append(cache_vocab.word_value[Constants.UNK_WORD])
         else:
@@ -85,7 +85,7 @@ def transform_gold_by_cache_vocab(gold, cache_vocab, TRG):
 
 
 def cal_decoder_student_performance(gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False):
-    loss = cal_student_loss(gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
+    loss = cal_student_loss(gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
     
     n_correct, n_word = 0, 0
     for i in range(len(all_highway_exits)):
@@ -93,7 +93,7 @@ def cal_decoder_student_performance(gold, all_highway_exits, cache_vocab_dict, T
         early_exit_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG)
         early_exit_gold = torch.tensor(early_exit_gold).to(device)
         early_exit_gold = early_exit_gold.contiguous().view(-1)
-        non_pad_mask = early_exit_gold.ne(-1)
+        non_pad_mask = early_exit_gold.ne(1)
         early_exit_pred = early_exit_pred.max(1)[1]
         n_correct += early_exit_pred.eq(early_exit_gold).masked_select(non_pad_mask).sum().item()
     
@@ -117,8 +117,8 @@ def cal_student_loss(gold, all_highway_exits, cache_vocab_dict, TRG, device, smo
             one_hot = torch.zeros_like(early_exit_pred).scatter(1, early_exit_gold.view(-1, 1), 1)
             one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
             log_prb = F.log_softmax(early_exit_pred, dim=1)
-
-            non_pad_mask = early_exit_gold.ne(-1)
+            non_pad_mask = early_exit_gold.ne(1)
+            
             loss = -(one_hot * log_prb).sum(dim=1)
             loss = loss.masked_select(non_pad_mask).sum()  # average later 
         else:
@@ -200,7 +200,7 @@ def train_epoch(model, training_data, optimizer, opt, device, cache_vocab_dict, 
             loss = cal_encoder_student_performance(enc_output, all_highway_exits)
         elif training_mode == TRAIN_DECODER:
             loss, n_correct, n_word = cal_decoder_student_performance(
-                gold, all_highway_exits, cache_vocab_dict, TRG, device)
+                gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
             
         loss.backward()
         optimizer.step_and_update_lr()
@@ -250,7 +250,7 @@ def eval_epoch(model, validation_data, opt, device, cache_vocab_dict, TRG, train
                 loss = cal_encoder_student_performance(enc_output, all_highway_exits)
             elif training_mode == TRAIN_DECODER:
                 loss, n_correct, n_word = cal_decoder_student_performance(
-                    gold, all_highway_exits, cache_vocab_dict, TRG, device)
+                    gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
 
             # note keeping
             if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
@@ -452,11 +452,11 @@ def perpare_cache_vocab(opt):
 
     len_ = math.pow(len(sorted_words_frquency), 1.0/6)
 
-    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 255, TRG.unk_token)
-    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 511, TRG.unk_token)
-    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 1023, TRG.unk_token)
-    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 2047, TRG.unk_token)
-    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, len(sorted_words_frquency), TRG.unk_token)
+    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 256, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 512, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 1024, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 2048, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, len(sorted_words_frquency), Constants.UNK_WORD, Constants.PAD_WORD)
     
     result_dict = {
                 0: cache_vocab_0,

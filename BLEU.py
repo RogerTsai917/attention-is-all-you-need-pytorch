@@ -27,11 +27,12 @@ def main(answer_file_name, predict_file_name, entropy):
 
 if __name__ == "__main__":
 
-    predict_folder = "early_exit_base"
+    predict_folder = "cache_early_exit_base"
 
     encoder_similarity = 1
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0]
+    # entropy_list = [0.0, 1.5, 3.0]
     
 
     for entropy in entropy_list:

@@ -28,6 +28,7 @@ def last_layer_cosine_similarity(input1, input2):
 
 def entropy(x):
     """Calculate entropy of a pre-softmax logit Tensor"""
+    x = x[:, 2:]
     exp_x = torch.exp(x)
     A = torch.sum(exp_x, dim=1)  # sum of exp(x_i)
     B = torch.sum(x * exp_x, dim=1)  # sum of x_i * exp(x_i)
