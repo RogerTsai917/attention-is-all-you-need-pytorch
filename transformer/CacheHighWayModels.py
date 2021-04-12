@@ -1,6 +1,7 @@
 ''' Define the Transformer model '''
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import time
 from transformer.Layers import EncoderLayer, DecoderLayer, HighWayLayer
@@ -24,6 +25,16 @@ def last_layer_cosine_similarity(input1, input2):
     output = cos_dim_1(input1, input2)
     output = output.sum()
     return output.item()/input1.size(0)
+
+
+def is_unkown(x):
+    x = x[-1, :]
+    x = F.softmax(x, dim=-1)
+    best_value, best_idx = x.topk(1)
+    if best_idx[0] != 0 and best_idx[0] != 1:
+        return False
+    else:
+        return True
 
 
 def entropy(x):
@@ -171,6 +182,11 @@ class HighWayDecoder(nn.Module):
             DecoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+
+        # create teacher layer
+        self.teacher_layers = nn.ModuleList(
+            [HighWayLayer(d_model, len(cache_vocab_dict[index].word_value), bias=False)
+            for index in range(len(cache_vocab_dict))])
         
         # create highway layer
         self.decoder_highway = nn.ModuleList(
@@ -189,7 +205,7 @@ class HighWayDecoder(nn.Module):
 
     def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False):
 
-        dec_slf_attn_list, dec_enc_attn_list, all_highway_exits  = [], [], []
+        dec_slf_attn_list, dec_enc_attn_list, all_highway_exits, all_teacher_layers_output  = [], [], [], []
 
         dec_output = self.dropout(self.position_enc(self.trg_word_emb(trg_seq)))
         dec_output = self.layer_norm(dec_output)
@@ -205,19 +221,28 @@ class HighWayDecoder(nn.Module):
             dec_slf_attn_list += [dec_slf_attn] if return_attns else []
             dec_enc_attn_list += [dec_enc_attn] if return_attns else []
 
+            if layer_number == self.n_layers-1 and not translate:
+                for i in range(len(self.teacher_layers)):
+                    teacher_seq_logit = self.teacher_layers[i](dec_output)
+                    all_teacher_layers_output += [teacher_seq_logit]
+
             if self.early_exit and layer_number+1 < self.n_layers:
                 highway_seq_logit = self.decoder_highway[layer_number](dec_output)
                 all_highway_exits += [highway_seq_logit]
 
+                # if not self.training and translate:
+                #     if not is_unkown(highway_seq_logit[0]):
+                #         raise HighwayException(all_highway_exits, layer_number + 1)
+                
                 if not self.training and translate:
                     highway_entropy = entropy(highway_seq_logit[0])[-1]
                     if highway_entropy < self.early_exit_entropy[layer_number]:
                         raise HighwayException(all_highway_exits, layer_number + 1)
         
         if return_attns:
-            return dec_output, all_highway_exits, None, dec_slf_attn_list, dec_enc_attn_list
+            return dec_output, all_highway_exits, None, all_teacher_layers_output, dec_slf_attn_list, dec_enc_attn_list
         
-        return dec_output, all_highway_exits, None
+        return dec_output, all_highway_exits, None, all_teacher_layers_output
 
 
 class HighWayTransformer(nn.Module):
@@ -280,10 +305,10 @@ class HighWayTransformer(nn.Module):
         if train_encoder_exit:
             return enc_output, encoder_all_highway_exits, encoder_exit_layer
         else:
-            dec_output, decoder_all_highway_exits, decoder_exit_layer, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
+            dec_output, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
             if train_decoder_exit:
-                return dec_output, decoder_all_highway_exits, decoder_exit_layer
+                return dec_output, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output
             else:
                 seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
                 # reshape the tensor and return
-                return seq_logit, decoder_all_highway_exits, decoder_exit_layer
+                return seq_logit, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output

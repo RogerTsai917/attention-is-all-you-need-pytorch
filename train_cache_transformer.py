@@ -70,27 +70,28 @@ def cal_encoder_student_performance(enc_output, all_highway_exits):
     return total_loss
         
 
-def transform_gold_by_cache_vocab(gold, cache_vocab, TRG):
+def transform_gold_by_cache_vocab(gold, cache_vocab, TRG, trg_pad_idx):
     gold = gold.tolist()
     cache_gold = []
     for element in gold:
         word = TRG.vocab.itos[element]
         if word == Constants.PAD_WORD:
-            cache_gold.append(1)
+            cache_gold.append(trg_pad_idx)
         elif word not in cache_vocab.word_value:
-            cache_gold.append(cache_vocab.word_value[Constants.UNK_WORD])
+            # cache_gold.append(cache_vocab.word_value[Constants.UNK_WORD])
+            cache_gold.append(trg_pad_idx)
         else:
             cache_gold.append(cache_vocab.word_value[word])
     return cache_gold
 
 
-def cal_decoder_student_performance(gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False):
-    loss = cal_student_loss(gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
+def cal_decoder_student_performance(gold, trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False):
+    loss = cal_student_loss(gold, trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
     
     n_correct, n_word = 0, 0
     for i in range(len(all_highway_exits)):
         early_exit_pred = all_highway_exits[i].view(-1, all_highway_exits[i].size(2))
-        early_exit_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG)
+        early_exit_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
         early_exit_gold = torch.tensor(early_exit_gold).to(device)
         early_exit_gold = early_exit_gold.contiguous().view(-1)
         non_pad_mask = early_exit_gold.ne(1)
@@ -103,11 +104,12 @@ def cal_decoder_student_performance(gold, all_highway_exits, cache_vocab_dict, T
     return loss, n_correct, n_word
 
 
-def cal_student_loss(gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False):
+def cal_student_loss(gold, trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False):
+    gold_view = gold.contiguous().view(-1)
     total_loss = 0.0
     for i in range(len(all_highway_exits)):
         early_exit_pred = all_highway_exits[i].view(-1, all_highway_exits[i].size(2))
-        early_exit_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG)
+        early_exit_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
         early_exit_gold = torch.tensor(early_exit_gold).to(device)
         early_exit_gold = early_exit_gold.contiguous().view(-1)
         
@@ -117,15 +119,48 @@ def cal_student_loss(gold, all_highway_exits, cache_vocab_dict, TRG, device, smo
             one_hot = torch.zeros_like(early_exit_pred).scatter(1, early_exit_gold.view(-1, 1), 1)
             one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
             log_prb = F.log_softmax(early_exit_pred, dim=1)
-            non_pad_mask = early_exit_gold.ne(1)
+            non_pad_mask = gold_view.ne(trg_pad_idx)
             
             loss = -(one_hot * log_prb).sum(dim=1)
             loss = loss.masked_select(non_pad_mask).sum()  # average later 
         else:
-            loss = F.cross_entropy(early_exit_pred, early_exit_gold, ignore_index=-1, reduction='sum')
+            loss = F.cross_entropy(early_exit_pred, early_exit_gold, ignore_index=1, reduction='sum')
         
         total_loss += loss
     return loss
+
+
+def cal_decoder_student_performance_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    loss = cal_student_loss_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+
+    n_correct, n_word = 0, 0
+    gold = gold.contiguous().view(-1)
+    non_pad_mask = gold.ne(trg_pad_idx)
+    for early_exit_output in all_highway_exits:
+        # early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
+        early_exit_output = early_exit_output.view(-1, early_exit_output.size(-1))
+        early_exit_output = early_exit_output.max(1)[1]
+        n_correct += early_exit_output.eq(gold).masked_select(non_pad_mask).sum().item()
+    n_correct = n_correct // len(all_highway_exits)
+    n_word = non_pad_mask.sum().item()
+    
+    return loss, n_correct, n_word
+
+
+def cal_student_loss_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    gold = gold.contiguous().view(-1)
+    non_pad_mask = gold.ne(trg_pad_idx)
+    total_loss = 0.0
+    for i in range(len(all_highway_exits)):
+        teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
+        log_teacher_pred = F.softmax(teacher_pred, dim=1)
+
+        early_exit_output = all_highway_exits[i].view(-1, all_highway_exits[i].size(-1))
+        log_early_exit_output = F.log_softmax(early_exit_output, dim=1)
+        loss = -(log_teacher_pred * log_early_exit_output).sum(dim=1)
+        loss = loss.masked_select(non_pad_mask).sum()
+        total_loss += loss
+    return total_loss
 
 
 def cal_performance(pred, gold, trg_pad_idx, smoothing=False):
@@ -149,6 +184,7 @@ def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
     if smoothing:
         eps = 0.1
         n_class = pred.size(1)
+
         one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
         one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
         log_prb = F.log_softmax(pred, dim=1)
@@ -158,6 +194,74 @@ def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
         loss = loss.masked_select(non_pad_mask).sum()  # average later 
     else:
         loss = F.cross_entropy(pred, gold, ignore_index=trg_pad_idx, reduction='sum')
+    return loss
+
+
+def cal_performance_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    ''' Apply label smoothing if needed '''
+    loss = cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+    pred = pred.view(-1, pred.size(2))
+
+    pred = pred.max(1)[1]
+    gold_view = gold.contiguous().view(-1)
+    non_pad_mask = gold_view.ne(trg_pad_idx)
+    n_correct = pred.eq(gold_view).masked_select(non_pad_mask).sum().item()
+    n_word = non_pad_mask.sum().item()
+
+    for i in range(len(all_teacher_layers_output)):
+        teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
+        teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
+        teacher_gold = torch.tensor(teacher_gold).to(device)
+        teacher_gold = teacher_gold.contiguous().view(-1)
+        non_pad_mask = teacher_gold.ne(trg_pad_idx)
+        teacher_pred = teacher_pred.max(1)[1]
+        n_correct += teacher_pred.eq(teacher_gold).masked_select(non_pad_mask).sum().item()
+
+    n_correct = n_correct // len(all_teacher_layers_output)+1
+    n_word = non_pad_mask.sum().item()
+
+    return loss, n_correct, n_word
+
+
+def cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    ''' Calculate cross entropy loss, apply label smoothing if needed. '''
+    gold_view = gold.contiguous().view(-1)
+    pred = pred.view(-1, pred.size(2))
+    
+    total_loss = 0.0
+    if smoothing:
+        eps = 0.1
+        n_class = pred.size(1)
+        one_hot = torch.zeros_like(pred).scatter(1, gold_view.view(-1, 1), 1)
+        one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+        log_prb = F.log_softmax(pred, dim=1)
+
+        non_pad_mask = gold_view.ne(trg_pad_idx)
+        loss = -(one_hot * log_prb).sum(dim=1)
+        loss = loss.masked_select(non_pad_mask).sum()  # average later 
+    else:
+        loss = F.cross_entropy(pred, gold_view, ignore_index=trg_pad_idx, reduction='sum')
+    total_loss += loss
+    
+    for i in range(len(all_teacher_layers_output)):
+        teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
+        teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
+        teacher_gold = torch.tensor(teacher_gold).to(device)
+        teacher_gold = teacher_gold.contiguous().view(-1)
+        
+        if smoothing:
+            eps = 0.1
+            n_class = teacher_pred.size(1)
+            one_hot = torch.zeros_like(teacher_pred).scatter(1, teacher_gold.view(-1, 1), 1)
+            one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+            log_prb = F.log_softmax(teacher_pred, dim=1)
+            non_pad_mask = teacher_gold.ne(trg_pad_idx)
+            
+            loss = -(one_hot * log_prb).sum(dim=1)
+            loss = loss.masked_select(non_pad_mask).sum()  # average later 
+        else:
+            loss = F.cross_entropy(teacher_pred, teacher_gold, ignore_index=1, reduction='sum')
+        total_loss += loss
     return loss
 
 
@@ -188,7 +292,7 @@ def train_epoch(model, training_data, optimizer, opt, device, cache_vocab_dict, 
         # forward
         optimizer.zero_grad()
         if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
-            pred ,all_highway_exits, _ = model(src_seq, trg_seq)
+            pred ,all_highway_exits, decoder_exit_layer, all_teacher_layers_output = model(src_seq, trg_seq)
         elif training_mode == TRAIN_ENCODER:
             enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
 
@@ -196,11 +300,15 @@ def train_epoch(model, training_data, optimizer, opt, device, cache_vocab_dict, 
         if training_mode == TRAIN_BASE:
             loss, n_correct, n_word = cal_performance(
                 pred, gold, opt.trg_pad_idx, smoothing=smoothing)
+            # loss, n_correct, n_word = cal_performance_with_teacher_layers(
+            #     pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
         elif training_mode == TRAIN_ENCODER:
             loss = cal_encoder_student_performance(enc_output, all_highway_exits)
         elif training_mode == TRAIN_DECODER:
             loss, n_correct, n_word = cal_decoder_student_performance(
-                gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
+                gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
+            # loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
+            #     gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
             
         loss.backward()
         optimizer.step_and_update_lr()
@@ -239,18 +347,22 @@ def eval_epoch(model, validation_data, opt, device, cache_vocab_dict, TRG, train
 
             # forward
             if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
-                pred ,all_highway_exits, _ = model(src_seq, trg_seq)
+                pred ,all_highway_exits, decoder_exit_layer, all_teacher_layers_output = model(src_seq, trg_seq)
             elif training_mode == TRAIN_ENCODER:
                 enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
 
             if training_mode == TRAIN_BASE:
                 loss, n_correct, n_word = cal_performance(
                     pred, gold, opt.trg_pad_idx, smoothing=False)
+                # loss, n_correct, n_word = cal_performance_with_teacher_layers(
+                # pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
             elif training_mode == TRAIN_ENCODER:
                 loss = cal_encoder_student_performance(enc_output, all_highway_exits)
             elif training_mode == TRAIN_DECODER:
                 loss, n_correct, n_word = cal_decoder_student_performance(
-                    gold, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
+                gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
+                # loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
+                #     gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
 
             # note keeping
             if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
@@ -448,15 +560,19 @@ def perpare_cache_vocab(opt):
         sentence = [TRG.vocab.stoi.get(word, unk_idx) for word in sentence]
         words_frequency = add_lsit_to_dict(sentence, words_frequency)
 
+        sentence = example.src
+        sentence = [SRC.vocab.stoi.get(word, unk_idx) for word in sentence]
+        words_frequency = add_lsit_to_dict(sentence, words_frequency)
+
     sorted_words_frquency = dict(sorted(words_frequency.items(), key=lambda item: item[1], reverse=True))
 
-    len_ = math.pow(len(sorted_words_frquency), 1.0/6)
-
-    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 256, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 512, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 1024, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 2048, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, len(sorted_words_frquency), Constants.UNK_WORD, Constants.PAD_WORD)
+    # len_ = math.pow(len(sorted_words_frquency), 1.0/6)
+    
+    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 9000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 8000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 7000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 6000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 5000, Constants.UNK_WORD, Constants.PAD_WORD)
     
     result_dict = {
                 0: cache_vocab_0,
