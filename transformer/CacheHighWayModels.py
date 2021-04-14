@@ -226,7 +226,7 @@ class HighWayDecoder(nn.Module):
                     teacher_seq_logit = self.teacher_layers[i](dec_output)
                     all_teacher_layers_output += [teacher_seq_logit]
 
-            if self.early_exit and layer_number+1 < self.n_layers:
+            if self.early_exit and layer_number < self.n_layers-1:
                 highway_seq_logit = self.decoder_highway[layer_number](dec_output)
                 all_highway_exits += [highway_seq_logit]
 
@@ -309,6 +309,6 @@ class HighWayTransformer(nn.Module):
             if train_decoder_exit:
                 return dec_output, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output
             else:
-                seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
                 # reshape the tensor and return
+                seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
                 return seq_logit, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output
