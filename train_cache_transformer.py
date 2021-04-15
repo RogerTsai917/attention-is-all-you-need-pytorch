@@ -125,7 +125,7 @@ def cal_student_loss(gold, trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG
             loss = loss.masked_select(non_pad_mask).sum()  # average later 
         else:
             loss = F.cross_entropy(early_exit_pred, early_exit_gold, ignore_index=trg_pad_idx, reduction='sum')
-        
+          
         total_loss += loss
     return loss
 
@@ -549,7 +549,7 @@ def add_lsit_to_dict(_list, _dict):
 def perpare_cache_vocab(opt):
     data = pickle.load(open(opt.data_pkl, 'rb'))
     SRC, TRG = data['vocab']['src'], data['vocab']['trg']
-    print('[Info] Get vocabulary size:', len(TRG.vocab))
+    print('[Info] vocabulary size:', len(TRG.vocab))
 
     fields = {'src': data['vocab']['src'], 'trg':data['vocab']['trg']}
     train = Dataset(examples=data['train'], fields=fields)
@@ -566,7 +566,7 @@ def perpare_cache_vocab(opt):
         # words_frequency = add_lsit_to_dict(sentence, words_frequency)
 
     sorted_words_frquency = dict(sorted(words_frequency.items(), key=lambda item: item[1], reverse=True))
-    print("len(sorted_words_frquency):", len(sorted_words_frquency))
+    print("[Info] sorted_words_frquency size:", len(sorted_words_frquency))
 
     # len_ = math.pow(len(sorted_words_frquency), 1.0/6)
     
