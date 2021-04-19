@@ -132,20 +132,20 @@ def perpare_cache_vocab(opt):
         sentence = [TRG.vocab.stoi.get(word, unk_idx) for word in sentence]
         words_frequency = add_lsit_to_dict(sentence, words_frequency)
 
-        # sentence = example.src
-        # sentence = [SRC.vocab.stoi.get(word, unk_idx) for word in sentence]
-        # words_frequency = add_lsit_to_dict(sentence, words_frequency)
+        sentence = example.src
+        sentence = [SRC.vocab.stoi.get(word, unk_idx) for word in sentence]
+        words_frequency = add_lsit_to_dict(sentence, words_frequency)
 
     sorted_words_frquency = dict(sorted(words_frequency.items(), key=lambda item: item[1], reverse=True))
     print("len(sorted_words_frquency):", len(sorted_words_frquency))
 
     len_ = math.pow(len(sorted_words_frquency), 1.0/6)
 
-    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 5000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 6000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 7000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 8000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 9000, Constants.UNK_WORD, Constants.PAD_WORD)
     
     result_dict = {
                 0: cache_vocab_0,
@@ -265,7 +265,7 @@ if __name__ == "__main__":
     encoder_similarity = 1
 
     entropy_list = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0, 3.5, 4.0]
-    # entropy_list = [5.0]
+    # entropy_list = [1.5]
     
     for entropy in entropy_list:   
         main(encoder_similarity, entropy)

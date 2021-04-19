@@ -11,5 +11,5 @@ python train_cache_transformer.py\
     -train_b 128\
     -val_b 128\
     -warmup 128000\
-    -base_epoch 400\
-    -highway_decoder_epoch 400
+    -base_epoch 300\
+    -highway_decoder_epoch 200

@@ -82,6 +82,7 @@ def transform_gold_by_cache_vocab(gold, cache_vocab, TRG, trg_pad_idx):
             cache_gold.append(trg_pad_idx)
         else:
             cache_gold.append(cache_vocab.word_value[word])
+            # print(cache_vocab.value_word[cache_vocab.word_value[word]])
     return cache_gold
 
 
@@ -125,9 +126,10 @@ def cal_student_loss(gold, trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG
             loss = loss.masked_select(non_pad_mask).sum()  # average later 
         else:
             loss = F.cross_entropy(early_exit_pred, early_exit_gold, ignore_index=trg_pad_idx, reduction='sum')
-          
+        
         total_loss += loss
-    return loss
+    
+    return total_loss
 
 
 # def cal_decoder_student_performance_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
@@ -262,7 +264,7 @@ def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
 #         else:
 #             loss = F.cross_entropy(teacher_pred, teacher_gold, ignore_index=trg_pad_idx, reduction='sum')
 #         total_loss += loss
-#     return loss
+#     return total_loss
 
 
 def patch_src(src, pad_idx):
@@ -561,20 +563,20 @@ def perpare_cache_vocab(opt):
         sentence = [TRG.vocab.stoi.get(word, unk_idx) for word in sentence]
         words_frequency = add_lsit_to_dict(sentence, words_frequency)
 
-        # sentence = example.src
-        # sentence = [SRC.vocab.stoi.get(word, unk_idx) for word in sentence]
-        # words_frequency = add_lsit_to_dict(sentence, words_frequency)
+        sentence = example.src
+        sentence = [SRC.vocab.stoi.get(word, unk_idx) for word in sentence]
+        words_frequency = add_lsit_to_dict(sentence, words_frequency)
 
     sorted_words_frquency = dict(sorted(words_frequency.items(), key=lambda item: item[1], reverse=True))
     print("[Info] sorted_words_frquency size:", len(sorted_words_frquency))
 
     # len_ = math.pow(len(sorted_words_frquency), 1.0/6)
     
-    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 4615, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 5000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 6000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 7000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 8000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 9000, Constants.UNK_WORD, Constants.PAD_WORD)
     
     result_dict = {
                 0: cache_vocab_0,

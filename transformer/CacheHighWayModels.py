@@ -236,6 +236,7 @@ class HighWayDecoder(nn.Module):
                 
                 if not self.training and translate:
                     highway_entropy = entropy(highway_seq_logit[0])[-1]
+                    # print(layer_number, ":", highway_entropy)
                     if highway_entropy < self.early_exit_entropy[layer_number]:
                         raise HighwayException(all_highway_exits, layer_number + 1)
         

@@ -27,7 +27,7 @@ def main(answer_file_name, predict_file_name, entropy):
 
 if __name__ == "__main__":
 
-    predict_folder = "early_exit_base_without_KD"
+    predict_folder = "cache_early_exit_triangle"
 
     encoder_similarity = 1
 
