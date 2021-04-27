@@ -2,11 +2,15 @@
 This script handles the training process.
 '''
 
+import os
 import argparse
 import math
 import time
 import dill as pickle
 from tqdm import tqdm
+
+import random
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -27,7 +31,8 @@ TRAIN_DECODER = "train_decoder_early_exit"
 
 def load_model(opt, device, cache_vocab_dict, training_mode):
     if (training_mode == TRAIN_ENCODER) or ( not opt.encoder_early_exit and training_mode == TRAIN_DECODER):
-        checkpoint = torch.load(opt.save_model + '.chkpt', map_location=device)
+        file_name = os.path.join(opt.save_folder, (opt.save_model + '.chkpt'))
+        checkpoint = torch.load(file_name, map_location=device)
     elif training_mode == TRAIN_DECODER:
         checkpoint = torch.load(opt.save_model + '_encoder_highway.chkpt', map_location=device)
     model_opt = checkpoint['settings']
@@ -78,11 +83,13 @@ def transform_gold_by_cache_vocab(gold, cache_vocab, TRG, trg_pad_idx):
         if word == Constants.PAD_WORD:
             cache_gold.append(trg_pad_idx)
         elif word not in cache_vocab.word_value:
+            # # cache layer use <unk> to replace unknown word
             # cache_gold.append(cache_vocab.word_value[Constants.UNK_WORD])
+            
+            # cache layer use <blank> to replace unknown word
             cache_gold.append(trg_pad_idx)
         else:
             cache_gold.append(cache_vocab.word_value[word])
-            # print(cache_vocab.value_word[cache_vocab.word_value[word]])
     return cache_gold
 
 
@@ -132,37 +139,44 @@ def cal_student_loss(gold, trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG
     return total_loss
 
 
-# def cal_decoder_student_performance_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
-#     loss = cal_student_loss_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+def cal_decoder_student_performance_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    loss = cal_decoder_student_loss_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
 
-#     n_correct, n_word = 0, 0
-#     gold = gold.contiguous().view(-1)
-#     non_pad_mask = gold.ne(trg_pad_idx)
-#     for early_exit_output in all_highway_exits:
-#         # early_exit_output = early_exit_output.view(-1, early_exit_output.size(2))
-#         early_exit_output = early_exit_output.view(-1, early_exit_output.size(-1))
-#         early_exit_output = early_exit_output.max(1)[1]
-#         n_correct += early_exit_output.eq(gold).masked_select(non_pad_mask).sum().item()
-#     n_correct = n_correct // len(all_highway_exits)
-#     n_word = non_pad_mask.sum().item()
+    n_correct, n_word = 0, 0
+    for i in range(len(all_highway_exits)):
+        early_exit_pred = all_highway_exits[i].view(-1, all_highway_exits[i].size(2))
+        early_exit_pred = early_exit_pred.max(1)[1]
+        early_exit_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
+        early_exit_gold = torch.tensor(early_exit_gold).to(device)
+        early_exit_gold = early_exit_gold.contiguous().view(-1)
+        non_pad_mask = early_exit_gold.ne(trg_pad_idx)
+        n_correct += early_exit_pred.eq(early_exit_gold).masked_select(non_pad_mask).sum().item()
+
+    n_correct = n_correct // len(all_highway_exits)
+    n_word = non_pad_mask.sum().item()
     
-#     return loss, n_correct, n_word
+    return loss, n_correct, n_word
 
 
-# def cal_student_loss_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
-#     gold = gold.contiguous().view(-1)
-#     non_pad_mask = gold.ne(trg_pad_idx)
-#     total_loss = 0.0
-#     for i in range(len(all_highway_exits)):
-#         teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
-#         log_teacher_pred = F.softmax(teacher_pred, dim=1)
+def cal_decoder_student_loss_with_teacher_layers(gold, trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    gold_view = gold.contiguous().view(-1)
+    total_loss = 0.0
+    for i in range(len(all_highway_exits)):
+        early_exit_pred = all_highway_exits[i].view(-1, all_highway_exits[i].size(-1))
+        log_early_exit_pred = F.log_softmax(early_exit_pred, dim=1)
 
-#         early_exit_output = all_highway_exits[i].view(-1, all_highway_exits[i].size(-1))
-#         log_early_exit_output = F.log_softmax(early_exit_output, dim=1)
-#         loss = -(log_teacher_pred * log_early_exit_output).sum(dim=1)
-#         loss = loss.masked_select(non_pad_mask).sum()
-#         total_loss += loss
-#     return total_loss
+        teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(-1))
+        log_teacher_pred = F.softmax(teacher_pred, dim=1)
+
+        early_exit_gold = transform_gold_by_cache_vocab(gold_view, cache_vocab_dict[i], TRG, trg_pad_idx)
+        early_exit_gold = torch.tensor(early_exit_gold).to(device)
+        early_exit_gold = early_exit_gold.contiguous().view(-1)
+        non_pad_mask = early_exit_gold.ne(trg_pad_idx)
+        
+        loss = -(log_teacher_pred * log_early_exit_pred).sum(dim=1)
+        loss = loss.masked_select(non_pad_mask).sum()
+        total_loss += loss
+    return total_loss
 
 
 def cal_performance(pred, gold, trg_pad_idx, smoothing=False):
@@ -190,8 +204,8 @@ def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
         one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
         one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
         log_prb = F.log_softmax(pred, dim=1)
-
         non_pad_mask = gold.ne(trg_pad_idx)
+
         loss = -(one_hot * log_prb).sum(dim=1)
         loss = loss.masked_select(non_pad_mask).sum()  # average later 
     else:
@@ -199,72 +213,70 @@ def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
     return loss
 
 
-# def cal_performance_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
-#     ''' Apply label smoothing if needed '''
-#     loss = cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
-#     pred = pred.view(-1, pred.size(2))
+def cal_performance_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    ''' Apply label smoothing if needed '''
+    loss = cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+    pred = pred.view(-1, pred.size(2))
 
-#     pred = pred.max(1)[1]
-#     gold_view = gold.contiguous().view(-1)
-#     non_pad_mask = gold_view.ne(trg_pad_idx)
-#     n_correct = pred.eq(gold_view).masked_select(non_pad_mask).sum().item()
-#     n_word = non_pad_mask.sum().item()
+    pred = pred.max(1)[1]
+    gold_view = gold.contiguous().view(-1)
+    non_pad_mask = gold_view.ne(trg_pad_idx)
+    n_correct = pred.eq(gold_view).masked_select(non_pad_mask).sum().item()
+    n_word = non_pad_mask.sum().item()
 
-#     for i in range(len(all_teacher_layers_output)):
-#         teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
-#         teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
-#         teacher_gold = torch.tensor(teacher_gold).to(device)
-#         teacher_gold = teacher_gold.contiguous().view(-1)
-#         non_pad_mask = teacher_gold.ne(trg_pad_idx)
-#         teacher_pred = teacher_pred.max(1)[1]
-#         n_correct += teacher_pred.eq(teacher_gold).masked_select(non_pad_mask).sum().item()
+    for i in range(len(all_teacher_layers_output)):
+        teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
+        teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
+        teacher_gold = torch.tensor(teacher_gold).to(device)
+        teacher_gold = teacher_gold.contiguous().view(-1)
+        non_pad_mask = teacher_gold.ne(trg_pad_idx)
+        teacher_pred = teacher_pred.max(1)[1]
+        n_correct += teacher_pred.eq(teacher_gold).masked_select(non_pad_mask).sum().item()
 
-#     n_correct = n_correct // len(all_teacher_layers_output)+1
-#     n_word = non_pad_mask.sum().item()
+    n_correct = n_correct // (len(all_teacher_layers_output) + 1)
+    n_word = non_pad_mask.sum().item()
 
-#     return loss, n_correct, n_word
+    return loss, n_correct, n_word
 
-
-# def cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
-#     ''' Calculate cross entropy loss, apply label smoothing if needed. '''
-#     gold_view = gold.contiguous().view(-1)
-#     pred = pred.view(-1, pred.size(2))
+def cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
+    ''' Calculate cross entropy loss, apply label smoothing if needed. '''
+    gold_view = gold.contiguous().view(-1)
+    pred = pred.view(-1, pred.size(2))
     
-#     total_loss = 0.0
-#     if smoothing:
-#         eps = 0.1
-#         n_class = pred.size(1)
-#         one_hot = torch.zeros_like(pred).scatter(1, gold_view.view(-1, 1), 1)
-#         one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
-#         log_prb = F.log_softmax(pred, dim=1)
-
-#         non_pad_mask = gold_view.ne(trg_pad_idx)
-#         loss = -(one_hot * log_prb).sum(dim=1)
-#         loss = loss.masked_select(non_pad_mask).sum()  # average later 
-#     else:
-#         loss = F.cross_entropy(pred, gold_view, ignore_index=trg_pad_idx, reduction='sum')
-#     total_loss += loss
+    total_loss = 0.0
+    if smoothing:
+        eps = 0.1
+        n_class = pred.size(1)
+        one_hot = torch.zeros_like(pred).scatter(1, gold_view.view(-1, 1), 1)
+        one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+        log_prb = F.log_softmax(pred, dim=1)
+        non_pad_mask = gold_view.ne(trg_pad_idx)
+        loss = -(one_hot * log_prb).sum(dim=1)
+        loss = loss.masked_select(non_pad_mask).sum()  # average later 
+    else:
+        loss = F.cross_entropy(pred, gold_view, ignore_index=trg_pad_idx, reduction='sum')
+    total_loss += loss
     
-#     for i in range(len(all_teacher_layers_output)):
-#         teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
-#         teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
-#         teacher_gold = torch.tensor(teacher_gold).to(device)
-#         teacher_gold = teacher_gold.contiguous().view(-1)
+    for i in range(len(all_teacher_layers_output)):
+        teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(-1))
+        teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
+        teacher_gold = torch.tensor(teacher_gold).to(device)
+        teacher_gold = teacher_gold.contiguous().view(-1)
         
-#         if smoothing:
-#             eps = 0.1
-#             n_class = teacher_pred.size(1)
-#             one_hot = torch.zeros_like(teacher_pred).scatter(1, teacher_gold.view(-1, 1), 1)
-#             one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
-#             log_prb = F.log_softmax(teacher_pred, dim=1)
-#             non_pad_mask = teacher_gold.ne(trg_pad_idx)
-            
-#             loss = -(one_hot * log_prb).sum(dim=1)
-#             loss = loss.masked_select(non_pad_mask).sum()  # average later 
-#         else:
-#             loss = F.cross_entropy(teacher_pred, teacher_gold, ignore_index=trg_pad_idx, reduction='sum')
-#         total_loss += loss
-#     return total_loss
+        if smoothing:
+            eps = 0.1
+            n_class = teacher_pred.size(1)
+            one_hot = torch.zeros_like(teacher_pred).scatter(1, teacher_gold.view(-1, 1), 1)
+            one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+            log_prb = F.log_softmax(teacher_pred, dim=1)
+            non_pad_mask = teacher_gold.ne(trg_pad_idx)
+            loss = -(one_hot * log_prb).sum(dim=1)
+            loss = loss.masked_select(non_pad_mask).sum()  # average later 
+        else:
+            loss = F.cross_entropy(teacher_pred, teacher_gold, ignore_index=trg_pad_idx, reduction='sum')
+        total_loss += loss
+    
+    return total_loss
 
 
 def patch_src(src, pad_idx):
@@ -301,17 +313,23 @@ def train_epoch(model, training_data, optimizer, opt, device, cache_vocab_dict, 
 
         # backward and update parameters
         if training_mode == TRAIN_BASE:
-            loss, n_correct, n_word = cal_performance(
-                pred, gold, opt.trg_pad_idx, smoothing=smoothing)
-            # loss, n_correct, n_word = cal_performance_with_teacher_layers(
-            #     pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+            if opt.train_teacher_layers:
+                loss, n_correct, n_word = cal_performance_with_teacher_layers(
+                    pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+            else:
+                loss, n_correct, n_word = cal_performance(
+                    pred, gold, opt.trg_pad_idx, smoothing=smoothing)
+            
         elif training_mode == TRAIN_ENCODER:
             loss = cal_encoder_student_performance(enc_output, all_highway_exits)
         elif training_mode == TRAIN_DECODER:
-            loss, n_correct, n_word = cal_decoder_student_performance(
-                gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
-            # loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
-            #     gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+            if opt.train_teacher_layers:
+                loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
+                    gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+            else:
+                loss, n_correct, n_word = cal_decoder_student_performance(
+                    gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
+            
             
         loss.backward()
         optimizer.step_and_update_lr()
@@ -355,17 +373,23 @@ def eval_epoch(model, validation_data, opt, device, cache_vocab_dict, TRG, train
                 enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
 
             if training_mode == TRAIN_BASE:
-                loss, n_correct, n_word = cal_performance(
-                    pred, gold, opt.trg_pad_idx, smoothing=False)
-                # loss, n_correct, n_word = cal_performance_with_teacher_layers(
-                # pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
+                if opt.train_teacher_layers:
+                    loss, n_correct, n_word = cal_performance_with_teacher_layers(
+                        pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
+                else:
+                    loss, n_correct, n_word = cal_performance(
+                        pred, gold, opt.trg_pad_idx, smoothing=False)
+                
             elif training_mode == TRAIN_ENCODER:
                 loss = cal_encoder_student_performance(enc_output, all_highway_exits)
             elif training_mode == TRAIN_DECODER:
-                loss, n_correct, n_word = cal_decoder_student_performance(
-                gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
-                # loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
-                #     gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
+                if opt.train_teacher_layers:
+                    loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
+                        gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
+                else:
+                    loss, n_correct, n_word = cal_decoder_student_performance(
+                        gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
+                
 
             # note keeping
             if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
@@ -390,16 +414,21 @@ def train(model, training_data, validation_data, device, opt, cache_vocab_dict, 
 
     log_train_file, log_valid_file = None, None
 
+    try:
+        os.makedirs(opt.save_folder)
+    except FileExistsError:
+        pass
+
     if opt.log:
         if training_mode == TRAIN_BASE:
-            log_train_file = opt.log + '.train.base.log'
-            log_valid_file = opt.log + '.valid.base.log'
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.base.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.base.log')
         elif training_mode == TRAIN_ENCODER:
-            log_train_file = opt.log + '.train.encoder.highway.log'
-            log_valid_file = opt.log + '.valid.encoder.highway.log'
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.encoder.highway.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.encoder.highway.log')
         elif training_mode == TRAIN_DECODER:
-            log_train_file = opt.log + '.train.decoder.highway.log'
-            log_valid_file = opt.log + '.valid.decoder.highway.log'
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.decoder.highway.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.decoder.highway.log')
 
 
         print('[Info] Training performance will be written to file: {} and {}'.format(
@@ -509,20 +538,20 @@ def train(model, training_data, validation_data, device, opt, cache_vocab_dict, 
         if opt.save_model:
             if opt.save_mode == 'all':
                 if training_mode == TRAIN_BASE:
-                    model_name = opt.save_model + '_accu_{accu:3.3f}.chkpt'.format(accu=100*valid_accu)
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_accu_{accu:3.3f}.chkpt'.format(accu=100*valid_accu))
                 elif training_mode == TRAIN_ENCODER:
-                    model_name = opt.save_model + '_loss_{loss:3.3f}_encoder_highway.chkpt'.format(valid_loss)
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_loss_{loss:3.3f}_encoder_highway.chkpt'.format(valid_loss))
                 elif training_mode == TRAIN_DECODER:
-                    model_name = opt.save_model + '_accu_{accu:3.3f}_decoder_highway.chkpt'.format(accu=100*valid_accu)
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_accu_{accu:3.3f}_decoder_highway.chkpt'.format(accu=100*valid_accu))
                 torch.save(checkpoint, model_name)
 
             elif opt.save_mode == 'best':
                 if training_mode == TRAIN_BASE:
-                     model_name = opt.save_model + '.chkpt'
+                     model_name = os.path.join(opt.save_folder, opt.save_model + '.chkpt')
                 elif training_mode == TRAIN_ENCODER:
-                    model_name = opt.save_model + '_encoder_highway.chkpt'
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_encoder_highway.chkpt')
                 elif training_mode == TRAIN_DECODER:
-                    model_name = opt.save_model + '_decoder_highway.chkpt'
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_decoder_highway.chkpt')
                    
                 if training_mode == TRAIN_BASE and valid_loss <= min(valid_losses):
                     torch.save(checkpoint, model_name)
@@ -621,7 +650,10 @@ def main():
     parser.add_argument('-encoder_share_weight', action='store_true')
     parser.add_argument('-decoder_share_weight', action='store_true')
 
+    parser.add_argument('-train_teacher_layers', action='store_true')
+
     parser.add_argument('-log', default=None)
+    parser.add_argument('-save_folder', default="./")
     parser.add_argument('-save_model', default=None)
     parser.add_argument('-save_mode', type=str, choices=['all', 'best'], default='best')
 
@@ -629,6 +661,7 @@ def main():
     parser.add_argument('-label_smoothing', action='store_true')
 
     opt = parser.parse_args()
+
     opt.cuda = not opt.no_cuda
     opt.d_word_vec = opt.d_model
 
@@ -653,7 +686,18 @@ def main():
     else:
         raise
 
-    # create cache vocab
+    #========= set seed =========#
+    seed = 5566
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+    #========= create cache vocab =========#
     cache_vocab_dict, TRG = perpare_cache_vocab(opt)
 
     print(opt)
