@@ -27,14 +27,21 @@ from transformer.Cache import CacheVocabulary
 
 TRAIN_BASE = "train_base_model"
 TRAIN_ENCODER = "train_encoder_early_exit"
+TRAIN_DECODER_TEACHER = "train_decoder_teacher_layers"
 TRAIN_DECODER = "train_decoder_early_exit"
 
 def load_model(opt, device, cache_vocab_dict, training_mode):
-    if (training_mode == TRAIN_ENCODER) or ( not opt.encoder_early_exit and training_mode == TRAIN_DECODER):
+    if (training_mode == TRAIN_ENCODER) or \
+        (not opt.encoder_early_exit and training_mode == TRAIN_DECODER_TEACHER) or \
+        (not opt.encoder_early_exit and not opt.decoder_teacher and training_mode == TRAIN_DECODER):
         file_name = os.path.join(opt.save_folder, (opt.save_model + '.chkpt'))
         checkpoint = torch.load(file_name, map_location=device)
+    elif (training_mode == TRAIN_DECODER_TEACHER) or (not opt.decoder_teacher and training_mode == TRAIN_DECODER):
+        file_name = os.path.join(opt.save_folder, (opt.save_model + '_encoder_highway.chkpt'))
+        checkpoint = torch.load(file_name, map_location=device)
     elif training_mode == TRAIN_DECODER:
-        checkpoint = torch.load(opt.save_model + '_encoder_highway.chkpt', map_location=device)
+        file_name = os.path.join(opt.save_folder, (opt.save_model + '_decoder_teacher.chkpt'))
+        checkpoint = torch.load(file_name, map_location=device)
     model_opt = checkpoint['settings']
 
     model = HighWayTransformer(
@@ -43,6 +50,7 @@ def load_model(opt, device, cache_vocab_dict, training_mode):
         model_opt.src_pad_idx,
         model_opt.trg_pad_idx,
         encoder_early_exit=model_opt.encoder_early_exit,
+        decoder_teacher=model_opt.decoder_teacher,
         decoder_early_exit=model_opt.decoder_early_exit,
         trg_emb_prj_weight_sharing=model_opt.proj_share_weight,
         emb_src_trg_weight_sharing=model_opt.embs_share_weight,
@@ -216,21 +224,15 @@ def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
 def cal_performance_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
     ''' Apply label smoothing if needed '''
     loss = cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
-    pred = pred.view(-1, pred.size(2))
-
-    pred = pred.max(1)[1]
-    gold_view = gold.contiguous().view(-1)
-    non_pad_mask = gold_view.ne(trg_pad_idx)
-    n_correct = pred.eq(gold_view).masked_select(non_pad_mask).sum().item()
-    n_word = non_pad_mask.sum().item()
-
+    
+    n_correct, n_word = 0, 0
     for i in range(len(all_teacher_layers_output)):
         teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(2))
+        teacher_pred = teacher_pred.max(1)[1]
         teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
         teacher_gold = torch.tensor(teacher_gold).to(device)
         teacher_gold = teacher_gold.contiguous().view(-1)
         non_pad_mask = teacher_gold.ne(trg_pad_idx)
-        teacher_pred = teacher_pred.max(1)[1]
         n_correct += teacher_pred.eq(teacher_gold).masked_select(non_pad_mask).sum().item()
 
     n_correct = n_correct // (len(all_teacher_layers_output) + 1)
@@ -240,23 +242,7 @@ def cal_performance_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_lay
 
 def cal_loss_with_teacher_layers(pred, gold, trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False):
     ''' Calculate cross entropy loss, apply label smoothing if needed. '''
-    gold_view = gold.contiguous().view(-1)
-    pred = pred.view(-1, pred.size(2))
-    
     total_loss = 0.0
-    if smoothing:
-        eps = 0.1
-        n_class = pred.size(1)
-        one_hot = torch.zeros_like(pred).scatter(1, gold_view.view(-1, 1), 1)
-        one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
-        log_prb = F.log_softmax(pred, dim=1)
-        non_pad_mask = gold_view.ne(trg_pad_idx)
-        loss = -(one_hot * log_prb).sum(dim=1)
-        loss = loss.masked_select(non_pad_mask).sum()  # average later 
-    else:
-        loss = F.cross_entropy(pred, gold_view, ignore_index=trg_pad_idx, reduction='sum')
-    total_loss += loss
-    
     for i in range(len(all_teacher_layers_output)):
         teacher_pred = all_teacher_layers_output[i].view(-1, all_teacher_layers_output[i].size(-1))
         teacher_gold = transform_gold_by_cache_vocab(gold, cache_vocab_dict[i], TRG, trg_pad_idx)
@@ -305,37 +291,42 @@ def train_epoch(model, training_data, optimizer, opt, device, cache_vocab_dict, 
 
         # forward
         optimizer.zero_grad()
-        if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
-            pred ,all_highway_exits, decoder_exit_layer, all_teacher_layers_output = model(src_seq, trg_seq)
-            
+        if training_mode == TRAIN_BASE:
+            pred = model(src_seq, trg_seq)
         elif training_mode == TRAIN_ENCODER:
             enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
+        elif training_mode == TRAIN_DECODER_TEACHER:
+            pred, all_teacher_layers_output = model(src_seq, trg_seq, decoder_teacher=True)
+        elif training_mode == TRAIN_DECODER:
+            if opt.decoder_teacher:
+                decoder_all_highway_exits, all_teacher_layers_output = model(src_seq, trg_seq, decoder_teacher=True, decoder_exit=True)
+            else:
+               pred, decoder_all_highway_exits = model(src_seq, trg_seq, decoder_exit=True)
+
 
         # backward and update parameters
         if training_mode == TRAIN_BASE:
-            if opt.train_teacher_layers:
-                loss, n_correct, n_word = cal_performance_with_teacher_layers(
-                    pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
-            else:
-                loss, n_correct, n_word = cal_performance(
-                    pred, gold, opt.trg_pad_idx, smoothing=smoothing)
-            
+            loss, n_correct, n_word = cal_performance(
+                pred, gold, opt.trg_pad_idx, smoothing=smoothing)
+        
         elif training_mode == TRAIN_ENCODER:
             loss = cal_encoder_student_performance(enc_output, all_highway_exits)
+        elif training_mode == TRAIN_DECODER_TEACHER:
+            loss, n_correct, n_word = cal_performance_with_teacher_layers(
+                    pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)           
         elif training_mode == TRAIN_DECODER:
-            if opt.train_teacher_layers:
+            if opt.decoder_teacher:
                 loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
-                    gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
+                    gold, opt.trg_pad_idx, decoder_all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=smoothing)
             else:
-                loss, n_correct, n_word = cal_decoder_student_performance(
-                    gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)
-            
+               loss, n_correct, n_word = cal_decoder_student_performance(
+                    gold, opt.trg_pad_idx, decoder_all_highway_exits, cache_vocab_dict, TRG, device, smoothing=smoothing)   
             
         loss.backward()
         optimizer.step_and_update_lr()
 
         # note keeping
-        if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+        if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER_TEACHER or training_mode == TRAIN_DECODER:
             n_word_total += n_word
             n_word_correct += n_correct
             total_loss += loss.item()
@@ -343,7 +334,7 @@ def train_epoch(model, training_data, optimizer, opt, device, cache_vocab_dict, 
             batch_count +=1
             total_loss += loss.item()
 
-    if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+    if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER_TEACHER or training_mode == TRAIN_DECODER:
         loss_per_word = total_loss/n_word_total
         accuracy = n_word_correct/n_word_total
         return loss_per_word, accuracy
@@ -367,32 +358,36 @@ def eval_epoch(model, validation_data, opt, device, cache_vocab_dict, TRG, train
             trg_seq, gold = map(lambda x: x.to(device), patch_trg(batch.trg, opt.trg_pad_idx))
 
             # forward
-            if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
-                pred ,all_highway_exits, decoder_exit_layer, all_teacher_layers_output = model(src_seq, trg_seq)
+            if training_mode == TRAIN_BASE:
+                pred = model(src_seq, trg_seq)
             elif training_mode == TRAIN_ENCODER:
                 enc_output, all_highway_exits, _ = model(src_seq, trg_seq, encoder_exit=True)
-
-            if training_mode == TRAIN_BASE:
-                if opt.train_teacher_layers:
-                    loss, n_correct, n_word = cal_performance_with_teacher_layers(
-                        pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
+            elif training_mode == TRAIN_DECODER_TEACHER:
+                pred, all_teacher_layers_output = model(src_seq, trg_seq, decoder_teacher=True)
+            elif training_mode == TRAIN_DECODER:
+                if opt.decoder_teacher:
+                    decoder_all_highway_exits, all_teacher_layers_output = model(src_seq, trg_seq, decoder_teacher=True, decoder_exit=True)
                 else:
-                    loss, n_correct, n_word = cal_performance(
-                        pred, gold, opt.trg_pad_idx, smoothing=False)
+                    pred, decoder_all_highway_exits = model(src_seq, trg_seq, decoder_exit=True)
                 
+            if training_mode == TRAIN_BASE:
+                loss, n_correct, n_word = cal_performance(
+                    pred, gold, opt.trg_pad_idx, smoothing=False)
             elif training_mode == TRAIN_ENCODER:
                 loss = cal_encoder_student_performance(enc_output, all_highway_exits)
+            elif training_mode == TRAIN_DECODER_TEACHER:
+                loss, n_correct, n_word = cal_performance_with_teacher_layers(
+                        pred, gold, opt.trg_pad_idx, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)           
             elif training_mode == TRAIN_DECODER:
-                if opt.train_teacher_layers:
+                if opt.decoder_teacher:
                     loss, n_correct, n_word = cal_decoder_student_performance_with_teacher_layers(
-                        gold, opt.trg_pad_idx, all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
+                        gold, opt.trg_pad_idx, decoder_all_highway_exits, all_teacher_layers_output, cache_vocab_dict, TRG, device, smoothing=False)
                 else:
                     loss, n_correct, n_word = cal_decoder_student_performance(
-                        gold, opt.trg_pad_idx, all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
-                
+                        gold, opt.trg_pad_idx, decoder_all_highway_exits, cache_vocab_dict, TRG, device, smoothing=False)
 
             # note keeping
-            if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+            if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER_TEACHER or training_mode == TRAIN_DECODER:
                 n_word_total += n_word
                 n_word_correct += n_correct
                 total_loss += loss.item()
@@ -400,7 +395,7 @@ def eval_epoch(model, validation_data, opt, device, cache_vocab_dict, TRG, train
                 batch_count += 1
                 total_loss += loss.item()
 
-    if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER:
+    if training_mode == TRAIN_BASE or training_mode == TRAIN_DECODER_TEACHER or training_mode == TRAIN_DECODER:
         loss_per_word = total_loss/n_word_total
         accuracy = n_word_correct/n_word_total
         return loss_per_word, accuracy
@@ -426,6 +421,9 @@ def train(model, training_data, validation_data, device, opt, cache_vocab_dict, 
         elif training_mode == TRAIN_ENCODER:
             log_train_file = os.path.join(opt.save_folder, opt.log + '.train.encoder.highway.log')
             log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.encoder.highway.log')
+        elif training_mode == TRAIN_DECODER_TEACHER:
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.decoder.teacher.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.decoder.teacher.log')
         elif training_mode == TRAIN_DECODER:
             log_train_file = os.path.join(opt.save_folder, opt.log + '.train.decoder.highway.log')
             log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.decoder.highway.log')
@@ -484,7 +482,25 @@ def train(model, training_data, validation_data, device, opt, cache_vocab_dict, 
                 "weight_decay": 0.0,
             },
         ]
-
+    elif training_mode == TRAIN_DECODER_TEACHER:
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if ("decoder_teacher_layers" in n) and (not any(nd in n for nd in no_decay))
+                ],
+                "weight_decay": opt.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if ("decoder_teacher_layers" in n) and (any(nd in n for nd in no_decay))
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
     elif training_mode == TRAIN_DECODER:
         optimizer_grouped_parameters = [
             {
@@ -514,6 +530,8 @@ def train(model, training_data, validation_data, device, opt, cache_vocab_dict, 
         training_epoch = opt.base_epoch
     elif training_mode == TRAIN_ENCODER:
         training_epoch = opt.highway_encoder_epoch
+    elif training_mode == TRAIN_DECODER_TEACHER:
+        training_epoch = opt.teacher_decoder_epoch
     elif training_mode == TRAIN_DECODER:
         training_epoch = opt.highway_decoder_epoch
 
@@ -550,12 +568,14 @@ def train(model, training_data, validation_data, device, opt, cache_vocab_dict, 
                      model_name = os.path.join(opt.save_folder, opt.save_model + '.chkpt')
                 elif training_mode == TRAIN_ENCODER:
                     model_name = os.path.join(opt.save_folder, opt.save_model + '_encoder_highway.chkpt')
+                elif training_mode == TRAIN_DECODER_TEACHER:
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_decoder_teacher.chkpt')
                 elif training_mode == TRAIN_DECODER:
                     model_name = os.path.join(opt.save_folder, opt.save_model + '_decoder_highway.chkpt')
                    
                 if training_mode == TRAIN_BASE and valid_loss <= min(valid_losses):
                     torch.save(checkpoint, model_name)
-                elif training_mode == TRAIN_ENCODER or training_mode == TRAIN_DECODER:
+                elif training_mode == TRAIN_ENCODER or training_mode == TRAIN_DECODER_TEACHER or training_mode == TRAIN_DECODER:
                     torch.save(checkpoint, model_name)
                 print('    - [Info] The checkpoint file has been updated.')
 
@@ -627,6 +647,7 @@ def main():
 
     parser.add_argument('-base_epoch', type=int, default=10)
     parser.add_argument('-highway_encoder_epoch', type=int, default=10)
+    parser.add_argument('-teacher_decoder_epoch', type=int, default=10)
     parser.add_argument('-highway_decoder_epoch', type=int, default=10)
     parser.add_argument('-train_b', '--train_batch_size', type=int, default=2048)
     parser.add_argument('-val_b', '--val_batch_size', type=int, default=2048)
@@ -646,17 +667,17 @@ def main():
     parser.add_argument('-embs_share_weight', action='store_true')
     parser.add_argument('-proj_share_weight', action='store_true')
     parser.add_argument('-encoder_early_exit', action='store_true')
+    parser.add_argument('-decoder_teacher', action='store_true')
     parser.add_argument('-decoder_early_exit', action='store_true')
     parser.add_argument('-encoder_share_weight', action='store_true')
     parser.add_argument('-decoder_share_weight', action='store_true')
-
-    parser.add_argument('-train_teacher_layers', action='store_true')
 
     parser.add_argument('-log', default=None)
     parser.add_argument('-save_folder', default="./")
     parser.add_argument('-save_model', default=None)
     parser.add_argument('-save_mode', type=str, choices=['all', 'best'], default='best')
 
+    parser.add_argument('-seed', type=int, default=1024)
     parser.add_argument('-no_cuda', action='store_true')
     parser.add_argument('-label_smoothing', action='store_true')
 
@@ -687,12 +708,11 @@ def main():
         raise
 
     #========= set seed =========#
-    seed = 5566
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+    torch.manual_seed(opt.seed)
+    torch.cuda.manual_seed(opt.seed)
+    torch.cuda.manual_seed_all(opt.seed)
+    np.random.seed(opt.seed)
+    random.seed(opt.seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
@@ -708,6 +728,7 @@ def main():
         src_pad_idx=opt.src_pad_idx,
         trg_pad_idx=opt.trg_pad_idx,
         encoder_early_exit=opt.encoder_early_exit,
+        decoder_teacher=opt.decoder_teacher,
         decoder_early_exit=opt.decoder_early_exit,
         trg_emb_prj_weight_sharing=opt.proj_share_weight,
         emb_src_trg_weight_sharing=opt.embs_share_weight,
@@ -728,6 +749,10 @@ def main():
     if opt.encoder_early_exit: 
         high_way_transformer = load_model(opt, device, cache_vocab_dict, training_mode=TRAIN_ENCODER)
         train(high_way_transformer, training_data, validation_data, device, opt, cache_vocab_dict, TRG, training_mode=TRAIN_ENCODER)
+
+    if opt.decoder_teacher:
+        high_way_transformer = load_model(opt, device, cache_vocab_dict, training_mode=TRAIN_DECODER_TEACHER)
+        train(high_way_transformer, training_data, validation_data, device, opt, cache_vocab_dict, TRG, training_mode=TRAIN_DECODER_TEACHER)
 
     if opt.decoder_early_exit: 
         high_way_transformer = load_model(opt, device, cache_vocab_dict, training_mode=TRAIN_DECODER)

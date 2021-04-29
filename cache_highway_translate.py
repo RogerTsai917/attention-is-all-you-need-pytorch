@@ -28,6 +28,7 @@ def load_model(opt, device, cache_vocab_dict):
         model_opt.trg_pad_idx,
 
         encoder_early_exit=opt.encoder_early_exit,
+        decoder_teacher=model_opt.decoder_teacher,
         decoder_early_exit=opt.decoder_early_exit,
         trg_emb_prj_weight_sharing=model_opt.proj_share_weight,
         emb_src_trg_weight_sharing=model_opt.embs_share_weight,

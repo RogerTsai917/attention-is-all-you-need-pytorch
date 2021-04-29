@@ -27,7 +27,7 @@ def main(answer_file_name, predict_file_name, entropy):
 
 if __name__ == "__main__":
 
-    predict_folder = "cache_early_exit_inverted_triangle_with_nuk"
+    predict_folder = "cache_early_exit_inverted_triangle_with_KD"
 
     encoder_similarity = 1
 

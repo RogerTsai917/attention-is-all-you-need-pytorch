@@ -103,19 +103,19 @@ class HighWayEncoder(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.n_layers = n_layers
         self.share_weight = share_weight
-        self.early_exit = early_exit
         self.layer_stack = nn.ModuleList([
             EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
-        # create highway layer
-        self.encoder_highway = nn.ModuleList(
-            [HighWayLayer(d_model, d_model, bias=False)
-            for _ in range(n_layers)])
+        if early_exit:
+            # create highway layer
+            self.encoder_highway = nn.ModuleList(
+                [HighWayLayer(d_model, d_model, bias=False)
+                for _ in range(n_layers)])
 
-        # create a similarity list for early exit threshold
-        self.early_exit_similarity = [-1 for _ in range(n_layers)]
+            # create a similarity list for early exit threshold
+            self.early_exit_similarity = [-1 for _ in range(n_layers)]
     
     def set_early_exit_similarity(self, x):
         if (type(x) is float) or (type(x) is int):
@@ -124,7 +124,7 @@ class HighWayEncoder(nn.Module):
         else:
             self.early_exit_similarity = x
     
-    def forward(self, src_seq, src_mask, return_attns=False, early_exit_layer=None, translate=False):
+    def forward(self, src_seq, src_mask, return_attns=False, encoder_exit=False, early_exit_layer=None, translate=False):
         encoder_exit_layer = None
         enc_slf_attn_list, all_highway_exits = [], []
 
@@ -141,7 +141,7 @@ class HighWayEncoder(nn.Module):
             
             enc_slf_attn_list += [enc_slf_attn] if return_attns else []
 
-            if self.early_exit:
+            if encoder_exit:
                 highway_seq_logit = self.encoder_highway[layer_number](enc_output)
                 all_highway_exits += [highway_seq_logit]
 
@@ -157,8 +157,6 @@ class HighWayEncoder(nn.Module):
                 encoder_exit_layer = early_exit_layer
                 break
 
-        if return_attns:
-            return enc_output, all_highway_exits, encoder_exit_layer, enc_slf_attn_list
         return enc_output, all_highway_exits, encoder_exit_layer
 
 
@@ -167,7 +165,8 @@ class HighWayDecoder(nn.Module):
 
     def __init__(
             self, n_trg_vocab, d_word_vec, n_layers, n_head, d_k, d_v,
-            d_model, d_inner, pad_idx, n_position=200, dropout=0.1, share_weight=False, early_exit=False,
+            d_model, d_inner, pad_idx, n_position=200, dropout=0.1, 
+            share_weight=False, early_exit=False, teacher_layers=False,
             cache_vocab_dict=None):
 
         super().__init__()
@@ -177,24 +176,24 @@ class HighWayDecoder(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.n_layers = n_layers
         self.share_weight = share_weight
-        self.early_exit = early_exit
         self.layer_stack = nn.ModuleList([
             DecoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
             for _ in range(n_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
         # create teacher layer
-        self.teacher_layers = nn.ModuleList(
-            [HighWayLayer(d_model, len(cache_vocab_dict[index].word_value), bias=False)
-            for index in range(len(cache_vocab_dict))])
+        if teacher_layers:
+            self.decoder_teacher_layers = nn.ModuleList(
+                [HighWayLayer(d_model, len(cache_vocab_dict[index].word_value), bias=False)
+                for index in range(len(cache_vocab_dict))])
         
         # create highway layer
-        self.decoder_highway = nn.ModuleList(
-            [HighWayLayer(d_model, len(cache_vocab_dict[index].word_value), bias=False)
-            for index in range(len(cache_vocab_dict))])
-
-        # create a entropy list for early exit threshold
-        self.early_exit_entropy = [-1 for _ in range(n_layers)]
+        if early_exit:
+            self.decoder_highway = nn.ModuleList(
+                [HighWayLayer(d_model, len(cache_vocab_dict[index].word_value), bias=False)
+                for index in range(len(cache_vocab_dict))])
+            # create a entropy list for early exit threshold
+            self.early_exit_entropy = [-1 for _ in range(n_layers)]
 
     def set_early_exit_entropy(self, x):
         if (type(x) is float) or (type(x) is int):
@@ -203,7 +202,7 @@ class HighWayDecoder(nn.Module):
         else:
             self.early_exit_entropy = x
 
-    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, translate=False):
+    def forward(self, trg_seq, trg_mask, enc_output, src_mask, return_attns=False, decoder_teacher=False, decoder_exit=False, translate=False):
 
         dec_slf_attn_list, dec_enc_attn_list, all_highway_exits, all_teacher_layers_output  = [], [], [], []
 
@@ -221,12 +220,12 @@ class HighWayDecoder(nn.Module):
             dec_slf_attn_list += [dec_slf_attn] if return_attns else []
             dec_enc_attn_list += [dec_enc_attn] if return_attns else []
 
-            if layer_number == self.n_layers-1 and not translate:
-                for i in range(len(self.teacher_layers)):
-                    teacher_seq_logit = self.teacher_layers[i](dec_output)
+            if decoder_teacher and layer_number == self.n_layers-1:
+                for i in range(len(self.decoder_teacher_layers)):
+                    teacher_seq_logit = self.decoder_teacher_layers[i](dec_output)
                     all_teacher_layers_output += [teacher_seq_logit]
 
-            if self.early_exit and layer_number < self.n_layers-1:
+            if decoder_exit and layer_number < self.n_layers-1:
                 highway_seq_logit = self.decoder_highway[layer_number](dec_output)
                 all_highway_exits += [highway_seq_logit]
 
@@ -236,12 +235,8 @@ class HighWayDecoder(nn.Module):
                 
                 if not self.training and translate:
                     highway_entropy = entropy(highway_seq_logit[0])[-1]
-                    # print(layer_number, ":", highway_entropy)
                     if highway_entropy < self.early_exit_entropy[layer_number]:
                         raise HighwayException(all_highway_exits, layer_number + 1)
-        
-        if return_attns:
-            return dec_output, all_highway_exits, None, all_teacher_layers_output, dec_slf_attn_list, dec_enc_attn_list
         
         return dec_output, all_highway_exits, None, all_teacher_layers_output
 
@@ -254,7 +249,7 @@ class HighWayTransformer(nn.Module):
             d_word_vec=512, d_model=512, d_inner=2048,
             n_layers=6, n_head=8, d_k=64, d_v=64, dropout=0.1, n_position=200,
             trg_emb_prj_weight_sharing=True, emb_src_trg_weight_sharing=True,
-            encoder_early_exit=False, decoder_early_exit=False,
+            encoder_early_exit=False, decoder_teacher=False, decoder_early_exit=False,
             encoder_weight_sharing=False, decoder_weight_sharing=False,
             cache_vocab_dict=None):
 
@@ -273,7 +268,7 @@ class HighWayTransformer(nn.Module):
             n_trg_vocab=n_trg_vocab, n_position=n_position,
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
             n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
-            pad_idx=trg_pad_idx, dropout=dropout, 
+            pad_idx=trg_pad_idx, dropout=dropout, teacher_layers=decoder_teacher,
             early_exit=decoder_early_exit, share_weight=decoder_weight_sharing,
             cache_vocab_dict=cache_vocab_dict)
 
@@ -297,19 +292,30 @@ class HighWayTransformer(nn.Module):
             self.encoder.src_word_emb.weight = self.decoder.trg_word_emb.weight
 
 
-    def forward(self, src_seq, trg_seq, train_encoder_exit=False, train_decoder_exit=False):
+    def forward(self, src_seq, trg_seq, encoder_exit=False, decoder_teacher=False, decoder_exit=False):
 
         src_mask = get_pad_mask(src_seq, self.src_pad_idx)
         trg_mask = get_pad_mask(trg_seq, self.trg_pad_idx) & get_subsequent_mask(trg_seq)
 
-        enc_output, encoder_all_highway_exits, encoder_exit_layer, *_ = self.encoder(src_seq, src_mask)
-        if train_encoder_exit:
+        
+        if encoder_exit:
+            enc_output, encoder_all_highway_exits, encoder_exit_layer, *_ = self.encoder(src_seq, src_mask, encoder_exit=True)
             return enc_output, encoder_all_highway_exits, encoder_exit_layer
         else:
-            dec_output, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
-            if train_decoder_exit:
-                return dec_output, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output
-            else:
-                # reshape the tensor and return
-                seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
-                return seq_logit, decoder_all_highway_exits, decoder_exit_layer, all_teacher_layers_output
+            enc_output, *_ = self.encoder(src_seq, src_mask)
+        
+        if decoder_teacher and not decoder_exit:
+            dec_output, _, _, all_teacher_layers_output = self.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_teacher=True)
+            seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
+            return seq_logit, all_teacher_layers_output
+        elif decoder_teacher and decoder_exit:
+            _, decoder_all_highway_exits, _, all_teacher_layers_output = self.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_teacher=True, decoder_exit=True)
+            return decoder_all_highway_exits, all_teacher_layers_output
+        elif not decoder_teacher and decoder_exit:
+            dec_output , decoder_all_highway_exits = self.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_exit=True)
+            seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
+            return seq_logit, decoder_all_highway_exits
+        else:
+            dec_output, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask)
+            seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
+            return seq_logit

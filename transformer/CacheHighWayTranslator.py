@@ -49,7 +49,7 @@ class HighWayTranslator(nn.Module):
         exit_layer =None
         trg_mask = get_subsequent_mask(trg_seq)
         try:
-            dec_output, all_highway_exits, exit_layer, all_teacher_layers_output = self.model.decoder(trg_seq, trg_mask, enc_output, src_mask, translate=translate)
+            dec_output, all_highway_exits, exit_layer, all_teacher_layers_output = self.model.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_exit=True, translate=translate)
         except HighwayException as e:
             all_highway_exits = e.message
             seq_logit = all_highway_exits[-1]
