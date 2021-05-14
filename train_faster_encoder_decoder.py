@@ -2,11 +2,15 @@
 This script handles the training process.
 '''
 
+import os
 import argparse
 import math
 import time
 import dill as pickle
 from tqdm import tqdm
+
+import random
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -26,9 +30,11 @@ TRAIN_DECODER = "train_decoder_early_exit"
 
 def load_model(opt, device, training_mode):
     if (training_mode == TRAIN_ENCODER) or ( not opt.encoder_early_exit and training_mode == TRAIN_DECODER):
-        checkpoint = torch.load(opt.save_model + '.chkpt', map_location=device)
+        file_name = os.path.join(opt.save_folder, (opt.save_model + '.chkpt'))
+        checkpoint = torch.load(file_name, map_location=device)
     elif training_mode == TRAIN_DECODER:
-        checkpoint = torch.load(opt.save_model + '_encoder_highway.chkpt', map_location=device)
+        file_name = os.path.join(opt.save_folder, (opt.save_model + '_encoder_highway.chkpt'))
+        checkpoint = torch.load(file_name, map_location=device)
     model_opt = checkpoint['settings']
 
     model = HighWayTransformer(
@@ -296,16 +302,21 @@ def train(model, training_data, validation_data, device, opt, training_mode):
 
     log_train_file, log_valid_file = None, None
 
+    try:
+        os.makedirs(opt.save_folder)
+    except FileExistsError:
+        pass
+
     if opt.log:
         if training_mode == TRAIN_BASE:
-            log_train_file = opt.log + '.train.base.log'
-            log_valid_file = opt.log + '.valid.base.log'
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.base.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.base.log')
         elif training_mode == TRAIN_ENCODER:
-            log_train_file = opt.log + '.train.encoder.highway.log'
-            log_valid_file = opt.log + '.valid.encoder.highway.log'
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.encoder.highway.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.encoder.highway.log')
         elif training_mode == TRAIN_DECODER:
-            log_train_file = opt.log + '.train.decoder.highway.log'
-            log_valid_file = opt.log + '.valid.decoder.highway.log'
+            log_train_file = os.path.join(opt.save_folder, opt.log + '.train.decoder.highway.log')
+            log_valid_file = os.path.join(opt.save_folder, opt.log + '.valid.decoder.highway.log')
 
 
         print('[Info] Training performance will be written to file: {} and {}'.format(
@@ -415,20 +426,20 @@ def train(model, training_data, validation_data, device, opt, training_mode):
         if opt.save_model:
             if opt.save_mode == 'all':
                 if training_mode == TRAIN_BASE:
-                    model_name = opt.save_model + '_accu_{accu:3.3f}.chkpt'.format(accu=100*valid_accu)
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_accu_{accu:3.3f}.chkpt'.format(accu=100*valid_accu))
                 elif training_mode == TRAIN_ENCODER:
-                    model_name = opt.save_model + '_loss_{loss:3.3f}_encoder_highway.chkpt'.format(valid_loss)
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_loss_{loss:3.3f}_encoder_highway.chkpt'.format(valid_loss))
                 elif training_mode == TRAIN_DECODER:
-                    model_name = opt.save_model + '_accu_{accu:3.3f}_decoder_highway.chkpt'.format(accu=100*valid_accu)
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_accu_{accu:3.3f}_decoder_highway.chkpt'.format(accu=100*valid_accu))
                 torch.save(checkpoint, model_name)
 
             elif opt.save_mode == 'best':
                 if training_mode == TRAIN_BASE:
-                     model_name = opt.save_model + '.chkpt'
+                     model_name = os.path.join(opt.save_folder, opt.save_model + '.chkpt')
                 elif training_mode == TRAIN_ENCODER:
-                    model_name = opt.save_model + '_encoder_highway.chkpt'
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_encoder_highway.chkpt')
                 elif training_mode == TRAIN_DECODER:
-                    model_name = opt.save_model + '_decoder_highway.chkpt'
+                    model_name = os.path.join(opt.save_folder, opt.save_model + '_decoder_highway.chkpt')
                    
                 if training_mode == TRAIN_BASE and valid_loss <= min(valid_losses):
                     torch.save(checkpoint, model_name)
@@ -480,9 +491,11 @@ def main():
     parser.add_argument('-decoder_share_weight', action='store_true')
 
     parser.add_argument('-log', default=None)
+    parser.add_argument('-save_folder', default="./")
     parser.add_argument('-save_model', default=None)
     parser.add_argument('-save_mode', type=str, choices=['all', 'best'], default='best')
 
+    parser.add_argument('-seed', type=int, default=2048)
     parser.add_argument('-no_cuda', action='store_true')
     parser.add_argument('-label_smoothing', action='store_true')
 
@@ -510,6 +523,15 @@ def main():
         training_data, validation_data = prepare_dataloaders(opt, device)
     else:
         raise
+
+    #========= set seed =========#
+    torch.manual_seed(opt.seed)
+    torch.cuda.manual_seed(opt.seed)
+    torch.cuda.manual_seed_all(opt.seed)
+    np.random.seed(opt.seed)
+    random.seed(opt.seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
     print(opt)
 

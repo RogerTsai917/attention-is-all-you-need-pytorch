@@ -114,8 +114,8 @@ class HighWayEncoder(nn.Module):
                 [HighWayLayer(d_model, d_model, bias=False)
                 for _ in range(n_layers)])
 
-            # create a similarity list for early exit threshold
-            self.early_exit_similarity = [-1 for _ in range(n_layers)]
+        # create a similarity list for early exit threshold
+        self.early_exit_similarity = [-1 for _ in range(n_layers)]
     
     def set_early_exit_similarity(self, x):
         if (type(x) is float) or (type(x) is int):
@@ -312,7 +312,7 @@ class HighWayTransformer(nn.Module):
             _, decoder_all_highway_exits, _, all_teacher_layers_output = self.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_teacher=True, decoder_exit=True)
             return decoder_all_highway_exits, all_teacher_layers_output
         elif not decoder_teacher and decoder_exit:
-            dec_output , decoder_all_highway_exits = self.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_exit=True)
+            dec_output , decoder_all_highway_exits, *_ = self.decoder(trg_seq, trg_mask, enc_output, src_mask, decoder_exit=True)
             seq_logit = self.trg_word_prj(dec_output) * self.x_logit_scale
             return seq_logit, decoder_all_highway_exits
         else:

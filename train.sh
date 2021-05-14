@@ -13,6 +13,5 @@ python train_cache_transformer.py\
     -val_b 128\
     -warmup 128000\
     -base_epoch 400\
-    -teacher_decoder_epoch 300\
     -highway_decoder_epoch 300\
-    -save_folder model/cache_early_exit_inverted_triangle_with_KD
+    -save_folder model/early_exit_base

@@ -621,11 +621,11 @@ def perpare_cache_vocab(opt):
 
     # len_ = math.pow(len(sorted_words_frquency), 1.0/6)
     
-    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 5000, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 6000, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 7000, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 8000, Constants.UNK_WORD, Constants.PAD_WORD)
-    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 9000, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_0 = CacheVocabulary(TRG, sorted_words_frquency, 313, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_1 = CacheVocabulary(TRG, sorted_words_frquency, 625, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_2 = CacheVocabulary(TRG, sorted_words_frquency, 1250, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_3 = CacheVocabulary(TRG, sorted_words_frquency, 2500, Constants.UNK_WORD, Constants.PAD_WORD)
+    cache_vocab_4 = CacheVocabulary(TRG, sorted_words_frquency, 5000, Constants.UNK_WORD, Constants.PAD_WORD)
     
     result_dict = {
                 0: cache_vocab_0,
@@ -677,7 +677,7 @@ def main():
     parser.add_argument('-save_model', default=None)
     parser.add_argument('-save_mode', type=str, choices=['all', 'best'], default='best')
 
-    parser.add_argument('-seed', type=int, default=1024)
+    parser.add_argument('-seed', type=int, default=2048)
     parser.add_argument('-no_cuda', action='store_true')
     parser.add_argument('-label_smoothing', action='store_true')
 
